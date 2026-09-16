@@ -62,10 +62,19 @@ const CANCELLATION_CHECK_INTERVAL: usize = 100;
 const BUFFER_HTML_RESERVE_CAPACITY: usize = 10 * 1024;
 const BUFFER_LINES_RESERVE_CAPACITY: usize = 1000;
 
-// Bound the number of in-progress query matches so the capture list pool stays
-// within tree-sitter's 16-bit capture-list id space, which overflowed and
-// corrupted memory on very large inputs before tree-sitter 0.26.9.
-const MATCH_LIMIT: u32 = u16::MAX as u32;
+// Bound the number of in-progress query matches, for two reasons.
+//
+// The capture list pool has to stay within tree-sitter's 16-bit capture-list id
+// space, which overflowed and corrupted memory on very large inputs before
+// tree-sitter 0.26.9.
+//
+// `ts_query_cursor__prepare_to_capture` also rescans the in-progress match list
+// before it emits each capture, so patterns that stay in progress across a large
+// subtree make capture iteration quadratic in the size of that subtree. The html
+// queries hit this: `(element (start_tag (tag_name) @_tag) (text) @markup.*)`
+// stays open for as long as its element does, so a document whose markup sits
+// inside one wrapper element pays it on every capture underneath.
+const MATCH_LIMIT: u32 = 4096;
 
 static STANDARD_CAPTURE_NAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     vec![
