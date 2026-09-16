@@ -932,6 +932,30 @@ mod tests {
     }
 
     #[test]
+    fn match_limit_reaches_the_formatter_entry_point() {
+        // A document with enough matches open at once that starving the cursor
+        // changes what it captures, so this fails if the option stops short of
+        // the highlighter.
+        let source = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/heex.heex"),
+        )
+        .unwrap();
+        let language = Language::guess(Some("heex.heex"), &source);
+        let render = |limit: u32| {
+            crate::highlight_with_options(
+                &source,
+                crate::formatter::HtmlLinked::new(language, None, None, None),
+                HighlightOptions::new().match_limit(limit),
+            )
+        };
+
+        let reference = render(u16::MAX as u32);
+
+        assert_ne!(render(4), reference);
+        assert_eq!(render(DEFAULT_MATCH_LIMIT), reference);
+    }
+
+    #[test]
     fn match_limit_does_not_change_output_on_ordinary_source() {
         let code = "fn main() { let xs = vec![1, 2, 3]; }\n";
         let default = highlight_events(code, Language::Rust).unwrap();
