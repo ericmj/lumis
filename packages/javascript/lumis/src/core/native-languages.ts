@@ -438,7 +438,7 @@ export function createNativeLanguagesModule(
     highlightEvents(
       source: string,
       language: LoadedLanguage,
-      options: { rainbowBrackets?: boolean } = {},
+      options: { rainbowBrackets?: boolean; matchLimit?: number } = {},
     ): SyntaxHighlightEvent[] {
       rejectReentrantHighlight();
       if (language.definition.id === PLAINTEXT_LANG_ID) {
@@ -449,6 +449,7 @@ export function createNativeLanguagesModule(
         source,
         this.addonIdFor(language),
         options.rainbowBrackets ?? false,
+        options.matchLimit,
         hasResolvers ? this.packageResolverCallback : undefined,
         hasResolvers ? this.wasmResolverCallback : undefined,
       );
@@ -522,11 +523,13 @@ export function createNativeLanguagesModule(
       if (!this.canFormatNatively(language, canCallResolver)) return undefined;
 
       const rainbowBrackets = highlightOptions.rainbowBrackets;
+      const matchLimit = highlightOptions.matchLimit;
 
       switch (kind) {
         case "html-inline":
           return {
             rainbowBrackets,
+            matchLimit,
             kind,
             options: {
               theme: builtin.theme,
@@ -540,6 +543,7 @@ export function createNativeLanguagesModule(
         case "html-linked":
           return {
             rainbowBrackets,
+            matchLimit,
             kind,
             options: {
               preClass: builtin.preClass,
@@ -548,10 +552,16 @@ export function createNativeLanguagesModule(
             },
           };
         case "bbcode-scoped":
-          return { rainbowBrackets, kind, options: { highlightLines: builtin.highlightLines } };
+          return {
+            rainbowBrackets,
+            matchLimit,
+            kind,
+            options: { highlightLines: builtin.highlightLines },
+          };
         case "terminal":
           return {
             rainbowBrackets,
+            matchLimit,
             kind,
             options: {
               theme: builtin.theme,

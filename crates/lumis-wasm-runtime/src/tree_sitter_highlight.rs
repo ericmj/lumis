@@ -21,6 +21,7 @@
 //   A same-row offset may reach its own newline, which `(#offset! @c 0 1 0 1)` in the diff
 //   injection queries needs to keep joined hunk lines apart, and no further, so the byte and
 //   the point keep describing one place. Neovim clamps to neither.
+// - `Highlighter` carries a query match limit, settable per highlighter
 // - `@injection.filename` resolves an injected language from a path, as Neovim's
 //   `LanguageTree:_get_injection` does through `vim.filetype.match`. It sits beside the
 //   `injection.language` capture it is an alternative to, and is the only reason this file
@@ -62,19 +63,22 @@ const CANCELLATION_CHECK_INTERVAL: usize = 100;
 const BUFFER_HTML_RESERVE_CAPACITY: usize = 10 * 1024;
 const BUFFER_LINES_RESERVE_CAPACITY: usize = 1000;
 
-// Bound the number of in-progress query matches, for two reasons.
-//
-// The capture list pool has to stay within tree-sitter's 16-bit capture-list id
-// space, which overflowed and corrupted memory on very large inputs before
-// tree-sitter 0.26.9.
-//
-// `ts_query_cursor__prepare_to_capture` also rescans the in-progress match list
-// before it emits each capture, so patterns that stay in progress across a large
-// subtree make capture iteration quadratic in the size of that subtree. The html
-// queries hit this: `(element (start_tag (tag_name) @_tag) (text) @markup.*)`
-// stays open for as long as its element does, so a document whose markup sits
-// inside one wrapper element pays it on every capture underneath.
-const MATCH_LIMIT: u32 = 4096;
+/// Default bound on the number of in-progress query matches, for two reasons.
+///
+/// The capture list pool has to stay within tree-sitter's 16-bit capture-list id
+/// space, which overflowed and corrupted memory on very large inputs before
+/// tree-sitter 0.26.9.
+///
+/// `ts_query_cursor__prepare_to_capture` also rescans the in-progress match list
+/// before it emits each capture, so patterns that stay in progress across a large
+/// subtree make capture iteration quadratic in the size of that subtree. The html
+/// queries hit this: `(element (start_tag (tag_name) @_tag) (text) @markup.*)`
+/// stays open for as long as its element does, so a document whose markup sits
+/// inside one wrapper element pays it on every capture underneath.
+///
+/// Raising it recovers matches that tree-sitter would otherwise drop on documents
+/// with more simultaneous in-progress matches than this, at that cost.
+pub const DEFAULT_MATCH_LIMIT: u32 = 4096;
 
 static STANDARD_CAPTURE_NAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     vec![
@@ -543,6 +547,7 @@ fn line_start_byte(source: &[u8], byte: usize, point: Point, target_row: usize) 
 pub struct Highlighter {
     pub parser: Parser,
     cursors: Vec<QueryCursor>,
+    match_limit: u32,
     record_parsed_layers: bool,
     parsed_layers: Vec<ParsedLayer>,
 }
@@ -691,6 +696,7 @@ impl Highlighter {
         Self {
             parser: Parser::new(),
             cursors: Vec::new(),
+            match_limit: DEFAULT_MATCH_LIMIT,
             record_parsed_layers: false,
             parsed_layers: Vec::new(),
         }
@@ -698,6 +704,13 @@ impl Highlighter {
 
     pub fn parser(&mut self) -> &mut Parser {
         &mut self.parser
+    }
+
+    /// Bound the number of in-progress query matches for subsequent highlights.
+    ///
+    /// See [`DEFAULT_MATCH_LIMIT`] for what the bound costs and buys.
+    pub fn set_match_limit(&mut self, match_limit: u32) {
+        self.match_limit = match_limit;
     }
 
     pub fn record_parsed_layers(&mut self, record: bool) {
@@ -1012,7 +1025,7 @@ impl<'a> HighlightIterLayer<'a> {
                     )
                     .ok_or(Error::Cancelled)?;
                 let mut cursor = highlighter.cursors.pop().unwrap_or_default();
-                cursor.set_match_limit(MATCH_LIMIT);
+                cursor.set_match_limit(highlighter.match_limit);
 
                 // Process combined injections.
                 if let Some(combined_injections_query) = &config.combined_injections_query {

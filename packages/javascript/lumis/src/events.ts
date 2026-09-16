@@ -1,6 +1,7 @@
 import type { Node, Point, QueryCapture, QueryMatch, Range } from "web-tree-sitter";
 import { LANGUAGES } from "./generated/languages-meta.js";
 import { languageIdForFilename } from "./guess-language.js";
+import { DEFAULT_MATCH_LIMIT } from "./types.js";
 import type { LoadedLanguage, QueryCaptureOffset } from "./types.js";
 
 interface RuntimeLookup {
@@ -394,6 +395,7 @@ function collectHighlightLayers(
   runtime: RuntimeLookup,
   language: LoadedLanguage,
   depth: number,
+  matchLimit: number,
   includedRanges?: Range[],
   parentLanguageName?: string,
 ): HighlightLayer[] {
@@ -402,8 +404,8 @@ function collectHighlightLayers(
 
   try {
     const rootNode = tree.rootNode;
-    const queryMatches = language.config.query.matches(rootNode);
-    const queryCaptures = language.config.query.captures(rootNode);
+    const queryMatches = language.config.query.matches(rootNode, { matchLimit });
+    const queryCaptures = language.config.query.captures(rootNode, { matchLimit });
     const snapshot = snapshotCapturesWithMatches(
       queryCaptures,
       queryMatches,
@@ -439,6 +441,7 @@ function collectHighlightLayers(
         runtime,
         language,
         depth,
+        matchLimit,
         parentLanguageName,
       ),
     );
@@ -461,13 +464,16 @@ function collectInjectedLayers(
   runtime: RuntimeLookup,
   language: LoadedLanguage,
   depth: number,
+  matchLimit: number,
   parentLanguageName?: string,
 ): HighlightLayer[] {
   const layers: HighlightLayer[] = [];
   const combined = new Map<number, { languageName: string; ranges: Range[] }>();
 
   const inject = (languageName: string, ranges: Range[]) => {
-    layers.push(...injectedLayers(languageName, ranges, source, maps, runtime, language, depth));
+    layers.push(
+      ...injectedLayers(languageName, ranges, source, maps, runtime, language, depth, matchLimit),
+    );
   };
 
   for (const match of queryMatches) {
@@ -502,6 +508,7 @@ function injectedLayers(
   runtime: RuntimeLookup,
   language: LoadedLanguage,
   depth: number,
+  matchLimit: number,
 ): HighlightLayer[] {
   const injectedLanguage = runtime.getLoadedLanguage(languageName);
   if (!injectedLanguage) {
@@ -515,6 +522,7 @@ function injectedLayers(
     runtime,
     injectedLanguage,
     depth + 1,
+    matchLimit,
     ranges,
     language.definition.id,
   );
@@ -770,10 +778,17 @@ export function buildHighlightEventsWithSourceIndex(
   source: string,
   language: LoadedLanguage,
   runtime: RuntimeLookup,
-  options: { rainbowBrackets?: boolean } = {},
+  options: { rainbowBrackets?: boolean; matchLimit?: number } = {},
 ): { events: HighlightEvent[]; sourceIndex: SourceIndex } {
   const maps = buildSourceMaps(source);
-  const layers = collectHighlightLayers(source, maps, runtime, language, 0);
+  const layers = collectHighlightLayers(
+    source,
+    maps,
+    runtime,
+    language,
+    0,
+    options.matchLimit ?? DEFAULT_MATCH_LIMIT,
+  );
   const events = buildNestedEvents(layers, maps);
   return {
     events: options.rainbowBrackets ? applyRainbowBrackets(source, events, language, maps) : events,
@@ -785,7 +800,7 @@ export function buildHighlightEvents(
   source: string,
   language: LoadedLanguage,
   runtime: RuntimeLookup,
-  options: { rainbowBrackets?: boolean } = {},
+  options: { rainbowBrackets?: boolean; matchLimit?: number } = {},
 ): HighlightEvent[] {
   return buildHighlightEventsWithSourceIndex(source, language, runtime, options).events;
 }

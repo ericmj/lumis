@@ -71,6 +71,7 @@ use crate::themes::Theme;
 use lumis_core::annotations::Annotation;
 use lumis_core::events::HighlightEvent as CoreHighlightEvent;
 use lumis_core::highlights::HIGHLIGHT_NAMES;
+pub use lumis_wasm_runtime::tree_sitter_highlight::DEFAULT_MATCH_LIMIT;
 use lumis_wasm_runtime::tree_sitter_highlight::{HighlightEvent, Highlighter as TSHighlighter};
 use smol_str::format_smolstr;
 use std::cell::RefCell;
@@ -108,6 +109,7 @@ static DEFAULT_STYLE: LazyLock<Arc<Style>> = LazyLock::new(|| Arc::new(Style::de
 pub struct HighlightOptions<'a, T = ()> {
     annotations: &'a [Annotation<T>],
     rainbow_brackets: bool,
+    match_limit: u32,
 }
 
 impl<T> Copy for HighlightOptions<'_, T> {}
@@ -130,6 +132,7 @@ impl HighlightOptions<'static> {
         Self {
             annotations: &[],
             rainbow_brackets: false,
+            match_limit: DEFAULT_MATCH_LIMIT,
         }
     }
 
@@ -138,6 +141,7 @@ impl HighlightOptions<'static> {
         HighlightOptions {
             annotations,
             rainbow_brackets: self.rainbow_brackets,
+            match_limit: self.match_limit,
         }
     }
 }
@@ -153,8 +157,32 @@ impl<'a, T> HighlightOptions<'a, T> {
         self.annotations
     }
 
+    /// Bound the number of query matches tree-sitter keeps in progress at once.
+    ///
+    /// Defaults to [`DEFAULT_MATCH_LIMIT`]. Tree-sitter rescans the in-progress
+    /// match list before it emits each capture, so the bound is what keeps
+    /// highlighting linear on documents whose markup nests deeply enough to keep
+    /// many matches open at once. Raising it recovers matches that would
+    /// otherwise be dropped on such documents, at that cost.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use lumis::highlight::HighlightOptions;
+    ///
+    /// let options = HighlightOptions::new().match_limit(16_384);
+    /// ```
+    pub const fn match_limit(mut self, match_limit: u32) -> Self {
+        self.match_limit = match_limit;
+        self
+    }
+
     pub(crate) const fn rainbow_brackets_enabled(&self) -> bool {
         self.rainbow_brackets
+    }
+
+    pub(crate) const fn match_limit_value(&self) -> u32 {
+        self.match_limit
     }
 }
 
@@ -630,6 +658,8 @@ fn highlight_events_with<T, F>(
 where
     F: Fn(&str) -> Option<Language>,
 {
+    ts_highlighter.set_match_limit(options.match_limit_value());
+
     let events = ts_highlighter
         .highlight(language.config(), source.as_bytes(), None, |injected| {
             injected_language(injected).map(|language| language.config())
@@ -887,6 +917,32 @@ mod tests {
         assert!(options.rainbow_brackets_enabled());
         assert!(!HighlightOptions::default().rainbow_brackets_enabled());
         assert_eq!(HighlightOptions::default().annotation_items(), []);
+    }
+
+    #[test]
+    fn match_limit_defaults_and_overrides() {
+        assert_eq!(
+            HighlightOptions::default().match_limit_value(),
+            DEFAULT_MATCH_LIMIT
+        );
+        assert_eq!(
+            HighlightOptions::new().match_limit(64).match_limit_value(),
+            64
+        );
+    }
+
+    #[test]
+    fn match_limit_does_not_change_output_on_ordinary_source() {
+        let code = "fn main() { let xs = vec![1, 2, 3]; }\n";
+        let default = highlight_events(code, Language::Rust).unwrap();
+        let raised = highlight_events_with_options(
+            code,
+            Language::Rust,
+            HighlightOptions::new().match_limit(DEFAULT_MATCH_LIMIT * 4),
+        )
+        .unwrap();
+
+        assert_eq!(default, raised);
     }
 
     #[test]

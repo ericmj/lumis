@@ -11,7 +11,7 @@ use wasmtime::{Cache, CacheConfig, Config, Engine};
 
 use crate::brackets::{bracket_pairs, colorize_bracket_pairs, RainbowRange};
 use crate::store::LanguageStore;
-use crate::tree_sitter_highlight::{HighlightConfiguration, Highlighter};
+use crate::tree_sitter_highlight::{HighlightConfiguration, Highlighter, DEFAULT_MATCH_LIMIT};
 
 /// Everything needed to register a parser and its highlighting queries.
 #[derive(Clone)]
@@ -689,6 +689,7 @@ impl Runtime {
         let mut lease = self.workers.lease()?;
         let worker = lease.worker();
         worker.highlighter.record_parsed_layers(options.layers);
+        worker.highlighter.set_match_limit(options.match_limit);
         // Holds languages loaded during this walk. The callback has to hand back a
         // reference that outlives it, and an arena gives a stable address while
         // still allowing inserts, which a RefCell<Vec<_>> cannot.
@@ -808,6 +809,8 @@ pub struct HighlightOptions {
     pub injections: bool,
     /// Keep the tree parsed for each layer, for tools that inspect them.
     pub layers: bool,
+    /// Bound on the query matches tree-sitter keeps in progress at once.
+    pub match_limit: u32,
 }
 
 impl Default for HighlightOptions {
@@ -816,6 +819,7 @@ impl Default for HighlightOptions {
             rainbow_brackets: false,
             injections: true,
             layers: false,
+            match_limit: DEFAULT_MATCH_LIMIT,
         }
     }
 }

@@ -413,6 +413,15 @@ class User:
     const html = hl.highlight("plain text", htmlInline({ theme }));
     expect(html).toContain('class="language-plaintext"');
   });
+
+  it("accepts a match limit without changing output on ordinary source", () => {
+    const source = '{"a": 1, "b": [2, 3]}';
+    const formatter = htmlInline({ language: json, theme });
+
+    expect(hl.highlight(source, formatter, { matchLimit: 16_384 })).toBe(
+      hl.highlight(source, formatter),
+    );
+  });
 });
 
 describe("plaintext", () => {
