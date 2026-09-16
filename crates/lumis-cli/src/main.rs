@@ -14,7 +14,7 @@ use lumis_core::formatter::Formatter as CoreFormatter;
 use lumis_core::formatter::TerminalBackground;
 use lumis_core::languages::Language;
 use lumis_wasm_runtime::tree_sitter_highlight::ParsedLayer;
-use lumis_wasm_runtime::{HighlightOptions, HighlightOutput, DEFAULT_MATCH_LIMIT};
+use lumis_wasm_runtime::{HighlightOptions, HighlightOutput, DEFAULT_MATCH_LIMIT, MAX_MATCH_LIMIT};
 use serde::Serialize;
 use std::fmt::Display;
 use std::fmt::Write as _;
@@ -114,8 +114,12 @@ struct HighlightArgs {
     #[arg(long)]
     rainbow_brackets: bool,
 
-    /// Query matches tree-sitter keeps in progress at once
-    #[arg(long, default_value_t = DEFAULT_MATCH_LIMIT)]
+    /// Query matches tree-sitter keeps in progress at once, 1 to 65536
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MATCH_LIMIT,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_MATCH_LIMIT))
+    )]
     match_limit: u32,
 
     /// Lines to highlight, e.g. "1,3-5,10"

@@ -1097,8 +1097,10 @@ defmodule Lumis.LumisTest do
       options = Lumis.validate_options!(match_limit: 16_384)
       assert Keyword.fetch!(options, :match_limit) == 16_384
 
-      assert_raise NimbleOptions.ValidationError, fn ->
-        Lumis.validate_options!(match_limit: 0)
+      for limit <- [0, 65_537] do
+        assert_raise NimbleOptions.ValidationError, fn ->
+          Lumis.validate_options!(match_limit: limit)
+        end
       end
 
       source = "defmodule A do\n  def b, do: :c\nend\n"

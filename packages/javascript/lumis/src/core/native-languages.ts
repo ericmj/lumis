@@ -13,7 +13,7 @@ import type {
   WasmRef,
 } from "../types.js";
 import { BUILTIN_FORMATTER, getBuiltinFormatter } from "./builtin-formatter.js";
-import { warnUnresolvedInjection } from "../events.js";
+import { assertMatchLimit, warnUnresolvedInjection } from "../events.js";
 import { decodeNativeEvents } from "./native-event-codec.js";
 import { PLAINTEXT_LANG_ID } from "../types.js";
 import {
@@ -441,6 +441,7 @@ export function createNativeLanguagesModule(
       options: { rainbowBrackets?: boolean; matchLimit?: number } = {},
     ): SyntaxHighlightEvent[] {
       rejectReentrantHighlight();
+      assertMatchLimit(options.matchLimit);
       if (language.definition.id === PLAINTEXT_LANG_ID) {
         return [{ type: "source", start: 0, end: encoder.encode(source).byteLength }];
       }
@@ -524,6 +525,7 @@ export function createNativeLanguagesModule(
 
       const rainbowBrackets = highlightOptions.rainbowBrackets;
       const matchLimit = highlightOptions.matchLimit;
+      assertMatchLimit(matchLimit);
 
       switch (kind) {
         case "html-inline":

@@ -186,6 +186,8 @@ pub enum RuntimeError {
     LanguageNotCached(String),
     #[error("highlighting failed: {0}")]
     Highlight(String),
+    #[error("match limit {0} is outside 1..=65536")]
+    InvalidMatchLimit(u32),
 }
 
 impl Runtime {
@@ -689,7 +691,10 @@ impl Runtime {
         let mut lease = self.workers.lease()?;
         let worker = lease.worker();
         worker.highlighter.record_parsed_layers(options.layers);
-        worker.highlighter.set_match_limit(options.match_limit);
+        worker
+            .highlighter
+            .set_match_limit(options.match_limit)
+            .map_err(|_| RuntimeError::InvalidMatchLimit(options.match_limit))?;
         // Holds languages loaded during this walk. The callback has to hand back a
         // reference that outlives it, and an arena gives a stable address while
         // still allowing inserts, which a RefCell<Vec<_>> cannot.
@@ -777,7 +782,12 @@ impl Runtime {
         }
 
         if options.rainbow_brackets {
-            let ranges = rainbow_ranges(worker.highlighter.parser(), &root, source)?;
+            let ranges = rainbow_ranges(
+                worker.highlighter.parser(),
+                &root,
+                source,
+                options.match_limit,
+            )?;
             collected = apply_rainbow_brackets(collected, ranges, &root_id);
         }
 
@@ -809,7 +819,9 @@ pub struct HighlightOptions {
     pub injections: bool,
     /// Keep the tree parsed for each layer, for tools that inspect them.
     pub layers: bool,
-    /// Bound on the query matches tree-sitter keeps in progress at once.
+    /// Bound on the query matches tree-sitter keeps in progress at once, for the
+    /// highlight and bracket queries alike, in
+    /// `1..=`[`MAX_MATCH_LIMIT`](crate::tree_sitter_highlight::MAX_MATCH_LIMIT).
     pub match_limit: u32,
 }
 
@@ -877,6 +889,7 @@ fn rainbow_ranges(
     parser: &mut Parser,
     language: &LoadedLanguage,
     source: &str,
+    match_limit: u32,
 ) -> Result<Vec<RainbowRange>, RuntimeError> {
     let query = language.brackets.get_or_init(|| {
         crate::brackets::compile(&language.highlight.language, &language.brackets_source)
@@ -892,7 +905,7 @@ fn rainbow_ranges(
         return Ok(Vec::new());
     };
 
-    let pairs = bracket_pairs(query, tree.root_node(), source.as_bytes());
+    let pairs = bracket_pairs(query, tree.root_node(), source.as_bytes(), match_limit);
     Ok(colorize_bracket_pairs(pairs))
 }
 

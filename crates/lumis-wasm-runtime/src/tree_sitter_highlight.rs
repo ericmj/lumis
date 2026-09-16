@@ -21,7 +21,8 @@
 //   A same-row offset may reach its own newline, which `(#offset! @c 0 1 0 1)` in the diff
 //   injection queries needs to keep joined hunk lines apart, and no further, so the byte and
 //   the point keep describing one place. Neovim clamps to neither.
-// - `Highlighter` carries a query match limit, settable per highlighter
+// - `Highlighter` carries a query match limit, settable per highlighter within tree-sitter's
+//   documented `1..=65536`
 // - `@injection.filename` resolves an injected language from a path, as Neovim's
 //   `LanguageTree:_get_injection` does through `vim.filetype.match`. It sits beside the
 //   `injection.language` capture it is an alternative to, and is the only reason this file
@@ -69,16 +70,21 @@ const BUFFER_LINES_RESERVE_CAPACITY: usize = 1000;
 /// space, which overflowed and corrupted memory on very large inputs before
 /// tree-sitter 0.26.9.
 ///
-/// `ts_query_cursor__prepare_to_capture` also rescans the in-progress match list
-/// before it emits each capture, so patterns that stay in progress across a large
-/// subtree make capture iteration quadratic in the size of that subtree. The html
-/// queries hit this: `(element (start_tag (tag_name) @_tag) (text) @markup.*)`
-/// stays open for as long as its element does, so a document whose markup sits
-/// inside one wrapper element pays it on every capture underneath.
+/// `capture_list_pool_acquire` also walks the whole pool looking for a free
+/// capture list, and the pool grows up to this limit, so patterns that stay in
+/// progress across a large subtree make every capture cost as much as there are
+/// matches open. The html queries hit this:
+/// `(element (start_tag (tag_name) @_tag) (text) @markup.*)` stays open for as
+/// long as its element does, so a document whose markup sits inside one wrapper
+/// element pays it on every capture underneath.
 ///
 /// Raising it recovers matches that tree-sitter would otherwise drop on documents
 /// with more simultaneous in-progress matches than this, at that cost.
 pub const DEFAULT_MATCH_LIMIT: u32 = 4096;
+
+/// Largest match limit tree-sitter accepts; its `QueryCursor::set_match_limit`
+/// is documented for `1..=65536`.
+pub const MAX_MATCH_LIMIT: u32 = 65536;
 
 static STANDARD_CAPTURE_NAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     vec![
@@ -150,6 +156,8 @@ pub enum Error {
     Cancelled,
     #[error("Invalid language")]
     InvalidLanguage,
+    #[error("Match limit {0} is outside 1..=65536")]
+    InvalidMatchLimit(u32),
     #[error("Unknown error")]
     Unknown,
 }
@@ -709,8 +717,12 @@ impl Highlighter {
     /// Bound the number of in-progress query matches for subsequent highlights.
     ///
     /// See [`DEFAULT_MATCH_LIMIT`] for what the bound costs and buys.
-    pub fn set_match_limit(&mut self, match_limit: u32) {
+    pub fn set_match_limit(&mut self, match_limit: u32) -> Result<(), Error> {
+        if !(1..=MAX_MATCH_LIMIT).contains(&match_limit) {
+            return Err(Error::InvalidMatchLimit(match_limit));
+        }
         self.match_limit = match_limit;
+        Ok(())
     }
 
     pub fn record_parsed_layers(&mut self, record: bool) {

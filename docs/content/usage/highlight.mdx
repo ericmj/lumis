@@ -116,9 +116,9 @@ If detection fails, it falls back to plaintext.
 
 ## Match limit
 
-Tree-sitter rescans its in-progress match list before it emits each capture, so a query pattern that stays open across a large subtree costs more the deeper the document nests. Lumis bounds the number of matches kept in progress at 4096, which keeps highlighting linear on documents like a large HTML table wrapped in a single element.
+Tree-sitter walks its whole pool of in-progress matches before it emits each capture, so a query pattern that stays open across a large subtree costs more the deeper the document nests. Lumis bounds the number of matches kept in progress at 4096, for the highlight and bracket queries alike, which keeps highlighting linear on documents like a large HTML table wrapped in a single element.
 
-Raise it when a document is large enough that tree-sitter drops matches and scopes go missing, and accept the extra time. The maximum is 65536.
+Raise it when a document is large enough that tree-sitter drops matches and scopes go missing, and accept the extra time. Tree-sitter accepts 1 to 65536; every runtime rejects anything else.
 
 <Tabs groupId="runtime" queryString="lang" defaultValue="javascript">
   <TabItem value="javascript" label="JavaScript">

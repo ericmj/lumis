@@ -71,8 +71,8 @@ use crate::themes::Theme;
 use lumis_core::annotations::Annotation;
 use lumis_core::events::HighlightEvent as CoreHighlightEvent;
 use lumis_core::highlights::HIGHLIGHT_NAMES;
-pub use lumis_wasm_runtime::tree_sitter_highlight::DEFAULT_MATCH_LIMIT;
 use lumis_wasm_runtime::tree_sitter_highlight::{HighlightEvent, Highlighter as TSHighlighter};
+pub use lumis_wasm_runtime::tree_sitter_highlight::{DEFAULT_MATCH_LIMIT, MAX_MATCH_LIMIT};
 use smol_str::format_smolstr;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -157,12 +157,15 @@ impl<'a, T> HighlightOptions<'a, T> {
         self.annotations
     }
 
-    /// Bound the number of query matches tree-sitter keeps in progress at once.
+    /// Bound the number of query matches tree-sitter keeps in progress at once,
+    /// for the highlight and bracket queries alike.
     ///
-    /// Defaults to [`DEFAULT_MATCH_LIMIT`]. Tree-sitter rescans the in-progress
-    /// match list before it emits each capture, so the bound is what keeps
-    /// highlighting linear on documents whose markup nests deeply enough to keep
-    /// many matches open at once. Raising it recovers matches that would
+    /// Defaults to [`DEFAULT_MATCH_LIMIT`] and must be in `1..=`[`MAX_MATCH_LIMIT`];
+    /// highlighting with a value outside that range fails with
+    /// [`HighlightError::InvalidMatchLimit`]. Tree-sitter walks its whole pool of
+    /// in-progress matches before it emits each capture, so the bound is what
+    /// keeps highlighting linear on documents whose markup nests deeply enough to
+    /// keep many matches open at once. Raising it recovers matches that would
     /// otherwise be dropped on such documents, at that cost.
     ///
     /// # Examples
@@ -229,6 +232,10 @@ pub enum HighlightError {
     /// Failed to process a highlight event during parsing.
     #[error("failed to process highlight event: {0}")]
     EventProcessing(String),
+
+    /// The match limit was outside `1..=`[`MAX_MATCH_LIMIT`].
+    #[error("match limit {0} is outside 1..=65536")]
+    InvalidMatchLimit(u32),
 }
 
 /// High-level stateful highlighter for syntax highlighting.
@@ -658,7 +665,10 @@ fn highlight_events_with<T, F>(
 where
     F: Fn(&str) -> Option<Language>,
 {
-    ts_highlighter.set_match_limit(options.match_limit_value());
+    let match_limit = options.match_limit_value();
+    ts_highlighter
+        .set_match_limit(match_limit)
+        .map_err(|_| HighlightError::InvalidMatchLimit(match_limit))?;
 
     let events = ts_highlighter
         .highlight(language.config(), source.as_bytes(), None, |injected| {
@@ -687,7 +697,12 @@ where
         .collect::<Result<Vec<_>, _>>()?;
 
     if options.rainbow_brackets_enabled() {
-        Ok(apply_query_rainbow_brackets(source, core_events, language))
+        Ok(apply_query_rainbow_brackets(
+            source,
+            core_events,
+            language,
+            match_limit,
+        ))
     } else {
         Ok(core_events)
     }
@@ -697,8 +712,9 @@ fn apply_query_rainbow_brackets(
     source: &str,
     events: Vec<CoreHighlightEvent<'static>>,
     language: Language,
+    match_limit: u32,
 ) -> Vec<CoreHighlightEvent<'static>> {
-    let ranges = query_rainbow_ranges(source, language);
+    let ranges = query_rainbow_ranges(source, language, match_limit);
     if ranges.is_empty() {
         return events;
     }
@@ -706,7 +722,7 @@ fn apply_query_rainbow_brackets(
     overlay_rainbow_ranges(events, &ranges, language.id_name())
 }
 
-fn query_rainbow_ranges(source: &str, language: Language) -> Vec<RainbowRange> {
+fn query_rainbow_ranges(source: &str, language: Language, match_limit: u32) -> Vec<RainbowRange> {
     let config = language.config();
     let tree = RAINBOW_PARSER.with(|parser| {
         let mut parser = parser.borrow_mut();
@@ -725,6 +741,7 @@ fn query_rainbow_ranges(source: &str, language: Language) -> Vec<RainbowRange> {
         };
 
         let mut cursor = QueryCursor::new();
+        cursor.set_match_limit(match_limit);
         let mut matches =
             cursor.matches(&bracket_config.query, tree.root_node(), source.as_bytes());
         let mut pairs = Vec::new();
@@ -953,6 +970,45 @@ mod tests {
 
         assert_ne!(render(4), reference);
         assert_eq!(render(DEFAULT_MATCH_LIMIT), reference);
+    }
+
+    #[test]
+    fn match_limit_outside_the_tree_sitter_range_is_rejected() {
+        let code = "fn main() {}\n";
+        for limit in [0, MAX_MATCH_LIMIT + 1] {
+            let result = highlight_events_with_options(
+                code,
+                Language::Rust,
+                HighlightOptions::new().match_limit(limit),
+            );
+            assert_eq!(result, Err(HighlightError::InvalidMatchLimit(limit)));
+        }
+        assert!(highlight_events_with_options(
+            code,
+            Language::Rust,
+            HighlightOptions::new().match_limit(MAX_MATCH_LIMIT),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn match_limit_reaches_the_rainbow_bracket_query() {
+        // Every open bracket keeps a bracket-query match in progress until its
+        // close arrives, so starving the cursor drops pairs from deep nesting.
+        let code = format!("{}1{}\n", "(".repeat(8), ")".repeat(8));
+        let render = |limit: u32| {
+            highlight_events_with_options(
+                &code,
+                Language::Rust,
+                HighlightOptions::new()
+                    .rainbow_brackets(true)
+                    .match_limit(limit),
+            )
+            .unwrap()
+        };
+
+        assert_ne!(render(1), render(DEFAULT_MATCH_LIMIT));
+        assert_eq!(render(MAX_MATCH_LIMIT), render(DEFAULT_MATCH_LIMIT));
     }
 
     #[test]

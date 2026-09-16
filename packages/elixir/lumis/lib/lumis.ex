@@ -339,17 +339,17 @@ defmodule Lumis do
       doc: "Render nested brackets with rainbow bracket scopes."
     ],
     match_limit: [
-      type: {:or, [:pos_integer, nil]},
+      type: {:or, [{:in, 1..65_536}, nil]},
       default: nil,
       doc: """
-      Bound on the query matches Tree-sitter keeps in progress at once, or `nil`
-      for the default.
+      Bound on the query matches Tree-sitter keeps in progress at once, for the
+      highlight and bracket queries alike, or `nil` for the default.
 
-      Tree-sitter rescans the in-progress match list before it emits each
-      capture, so the bound is what keeps highlighting linear on documents whose
-      markup nests deeply enough to keep many matches open at once. Raising it
-      recovers matches that would otherwise be dropped on such documents, at
-      that cost.
+      Tree-sitter walks its whole pool of in-progress matches before it emits
+      each capture, so the bound is what keeps highlighting linear on documents
+      whose markup nests deeply enough to keep many matches open at once.
+      Raising it recovers matches that would otherwise be dropped on such
+      documents, at that cost.
       """
     ]
   ]
