@@ -949,7 +949,7 @@ mod tests {
             )
         };
 
-        let reference = render(u16::MAX as u32);
+        let reference = render(u32::from(u16::MAX));
 
         assert_ne!(render(4), reference);
         assert_eq!(render(DEFAULT_MATCH_LIMIT), reference);
