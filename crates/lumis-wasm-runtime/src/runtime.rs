@@ -11,7 +11,9 @@ use wasmtime::{Cache, CacheConfig, Config, Engine};
 
 use crate::brackets::{bracket_pairs, colorize_bracket_pairs, RainbowRange};
 use crate::store::LanguageStore;
-use crate::tree_sitter_highlight::{HighlightConfiguration, Highlighter, DEFAULT_MATCH_LIMIT};
+use crate::tree_sitter_highlight::{
+    HighlightConfiguration, Highlighter, DEFAULT_MATCH_LIMIT, MAX_MATCH_LIMIT,
+};
 
 /// Everything needed to register a parser and its highlighting queries.
 #[derive(Clone)]
@@ -673,6 +675,9 @@ impl Runtime {
         options: &HighlightOptions,
         mut resolve_injected: impl FnMut(&str) -> InjectionResolution,
     ) -> Result<HighlightOutput, RuntimeError> {
+        if !(1..=MAX_MATCH_LIMIT).contains(&options.match_limit) {
+            return Err(RuntimeError::InvalidMatchLimit(options.match_limit));
+        }
         let root = self.load_through_store(name_or_alias)?;
         let (root_id, languages, aliases) = {
             let catalog = self.catalog.read().expect("language catalog lock poisoned");
@@ -820,8 +825,8 @@ pub struct HighlightOptions {
     /// Keep the tree parsed for each layer, for tools that inspect them.
     pub layers: bool,
     /// Bound on the query matches tree-sitter keeps in progress at once, for the
-    /// highlight and bracket queries alike, in
-    /// `1..=`[`MAX_MATCH_LIMIT`](crate::tree_sitter_highlight::MAX_MATCH_LIMIT).
+    /// highlight and bracket queries alike, in `1..=`[`MAX_MATCH_LIMIT`]. A value
+    /// outside that range fails the highlight before any language loads.
     pub match_limit: u32,
 }
 
@@ -1176,6 +1181,23 @@ mod tests {
             Err(RuntimeError::Parser { language, .. }) if language == "json"
         ));
         assert!(results[1].is_ok(), "later parsers must still be attempted");
+    }
+
+    #[test]
+    fn an_invalid_match_limit_is_reported_before_the_language_is_looked_up() {
+        let runtime = Runtime::with_worker_limit(1).unwrap();
+        let options = HighlightOptions {
+            match_limit: 0,
+            ..HighlightOptions::default()
+        };
+        assert!(matches!(
+            runtime.highlight_with("{}", "missing", &options),
+            Err(RuntimeError::InvalidMatchLimit(0))
+        ));
+        assert!(matches!(
+            runtime.highlight_with("{}", "missing", &HighlightOptions::default()),
+            Err(RuntimeError::LanguageStoreUnavailable | RuntimeError::LanguageNotLoaded(_))
+        ));
     }
 
     #[test]
