@@ -65,6 +65,8 @@ lumis = { path = "crates/lumis" }
 lumis-core = { path = "crates/lumis-core" }
 lumis-build = { path = "crates/lumis-build" }
 lumis-wasm-runtime = { path = "crates/lumis-wasm-runtime" }
+tree-sitter = { git = "https://github.com/ericmj/tree-sitter.git", branch = "capture-list-pool-free-stack-0.26" }
+tree-sitter-language = { git = "https://github.com/ericmj/tree-sitter.git", branch = "capture-list-pool-free-stack-0.26" }
 
 [profile.release]
 lto = true
