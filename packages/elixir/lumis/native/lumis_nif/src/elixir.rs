@@ -1,10 +1,10 @@
 use lumis_core::formatter::{
-    bbcode, html::SteppedLineRange, html_inline, html_linked, terminal, BBCodeScopedBuilder,
-    Formatter, HtmlElement, HtmlInlineBuilder, HtmlLinkedBuilder, HtmlMultiThemesBuilder,
-    TerminalBackground, TerminalBuilder,
+    bbcode, html::AttrValue, html::SteppedLineRange, html_inline, html_linked, terminal,
+    BBCodeScopedBuilder, Formatter, HtmlElement, HtmlInlineBuilder, HtmlLinkedBuilder,
+    HtmlMultiThemesBuilder, TerminalBackground, TerminalBuilder,
 };
 use lumis_core::{languages::Language, themes};
-use rustler::{NifMap, NifStruct, NifTaggedEnum, NifUnitEnum};
+use rustler::{NifMap, NifStruct, NifTaggedEnum, NifUnitEnum, NifUntaggedEnum};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, NifUnitEnum)]
@@ -14,19 +14,75 @@ pub enum ExAppearance {
     Dark,
 }
 
+/// An attribute value as Elixir spells it: a string, or `true`/`false` for the
+/// boolean form and for removing one of Lumis's own attributes.
+///
+/// `bool` comes first because Rustler tries the variants in order and `true` is
+/// an atom, not a binary.
+#[derive(Clone, Debug, NifUntaggedEnum)]
+pub enum ExAttrValue {
+    Flag(bool),
+    Value(String),
+}
+
+impl From<ExAttrValue> for AttrValue {
+    fn from(value: ExAttrValue) -> Self {
+        match value {
+            ExAttrValue::Flag(flag) => Self::from(flag),
+            ExAttrValue::Value(value) => Self::Value(value),
+        }
+    }
+}
+
+impl From<AttrValue> for ExAttrValue {
+    fn from(value: AttrValue) -> Self {
+        match value {
+            AttrValue::Value(value) => Self::Value(value),
+            AttrValue::Present => Self::Flag(true),
+            AttrValue::Absent => Self::Flag(false),
+        }
+    }
+}
+
+/// Decode the attribute pairs an Elixir keyword list arrives as.
+pub(crate) fn attr_values(
+    attrs: Vec<(String, ExAttrValue)>,
+) -> lumis_core::formatter::html::HtmlAttrs {
+    attrs
+        .into_iter()
+        .map(|(name, value)| (name, value.into()))
+        .collect()
+}
+
+/// Encode attribute pairs back into what Elixir reads as a keyword list.
+pub(crate) fn ex_attr_values(
+    attrs: lumis_core::formatter::html::HtmlAttrs,
+) -> Vec<(String, ExAttrValue)> {
+    attrs
+        .into_iter()
+        .map(|(name, value)| (name, value.into()))
+        .collect()
+}
+
 #[derive(Debug, NifTaggedEnum)]
 pub enum ExFormatterOption {
     HtmlInline {
         theme: Option<ThemeOrString>,
         pre_class: Option<String>,
+        pre_attrs: Vec<(String, ExAttrValue)>,
+        code_attrs: Vec<(String, ExAttrValue)>,
         italic: bool,
         include_highlights: bool,
         highlight_lines: Option<ExHtmlInlineHighlightLines>,
+        line_numbers: bool,
         header: Option<ExHtmlElement>,
     },
     HtmlLinked {
         pre_class: Option<String>,
+        pre_attrs: Vec<(String, ExAttrValue)>,
+        code_attrs: Vec<(String, ExAttrValue)>,
         highlight_lines: Option<ExHtmlLinkedHighlightLines>,
+        line_numbers: bool,
         header: Option<ExHtmlElement>,
     },
     HtmlMultiThemes {
@@ -34,9 +90,12 @@ pub enum ExFormatterOption {
         default_theme: Option<String>,
         css_variable_prefix: Option<String>,
         pre_class: Option<String>,
+        pre_attrs: Vec<(String, ExAttrValue)>,
+        code_attrs: Vec<(String, ExAttrValue)>,
         italic: bool,
         include_highlights: bool,
         highlight_lines: Option<ExHtmlInlineHighlightLines>,
+        line_numbers: bool,
         header: Option<ExHtmlElement>,
     },
     Terminal {
@@ -44,6 +103,7 @@ pub enum ExFormatterOption {
         background: Option<ExTerminalBackground>,
         width: Option<usize>,
         highlight_lines: Option<ExTerminalHighlightLines>,
+        line_numbers: bool,
     },
     BbcodeScoped {
         highlight_lines: Option<ExBBCodeHighlightLines>,
@@ -61,9 +121,12 @@ impl Default for ExFormatterOption {
         Self::HtmlInline {
             theme: None,
             pre_class: None,
+            pre_attrs: Vec::new(),
+            code_attrs: Vec::new(),
             italic: false,
             include_highlights: false,
             highlight_lines: None,
+            line_numbers: false,
             header: None,
         }
     }
@@ -193,9 +256,12 @@ impl ExFormatterOption {
             ExFormatterOption::HtmlInline {
                 theme,
                 pre_class,
+                pre_attrs,
+                code_attrs,
                 italic,
                 include_highlights,
                 highlight_lines,
+                line_numbers,
                 header,
             } => {
                 let theme = theme.and_then(resolve_theme);
@@ -212,9 +278,12 @@ impl ExFormatterOption {
                     .language(language)
                     .theme(theme)
                     .pre_class(pre_class)
+                    .pre_attrs(attr_values(pre_attrs))
+                    .code_attrs(attr_values(code_attrs))
                     .italic(italic)
                     .include_highlights(include_highlights)
                     .highlight_lines(highlight_lines)
+                    .line_numbers(line_numbers)
                     .header(header)
                     .build()
                     .map_err(|e| format!("HtmlInline builder error: {e:?}"))?;
@@ -224,7 +293,10 @@ impl ExFormatterOption {
             }
             ExFormatterOption::HtmlLinked {
                 pre_class,
+                pre_attrs,
+                code_attrs,
                 highlight_lines,
+                line_numbers,
                 header,
             } => {
                 let (highlight_lines, stepped_highlight_lines) =
@@ -238,7 +310,10 @@ impl ExFormatterOption {
                 let mut formatter = HtmlLinkedBuilder::new()
                     .language(language)
                     .pre_class(pre_class)
+                    .pre_attrs(attr_values(pre_attrs))
+                    .code_attrs(attr_values(code_attrs))
                     .highlight_lines(highlight_lines)
+                    .line_numbers(line_numbers)
                     .header(header)
                     .build()
                     .map_err(|e| format!("HtmlLinked builder error: {e:?}"))?;
@@ -251,9 +326,12 @@ impl ExFormatterOption {
                 default_theme,
                 css_variable_prefix,
                 pre_class,
+                pre_attrs,
+                code_attrs,
                 italic,
                 include_highlights,
                 highlight_lines,
+                line_numbers,
                 header,
             } => {
                 let themes_map: HashMap<String, themes::Theme> =
@@ -273,9 +351,12 @@ impl ExFormatterOption {
                     .themes(themes_map)
                     .css_variable_prefix(css_variable_prefix.as_deref().unwrap_or("--lumis"))
                     .pre_class(pre_class)
+                    .pre_attrs(attr_values(pre_attrs))
+                    .code_attrs(attr_values(code_attrs))
                     .italic(italic)
                     .include_highlights(include_highlights)
                     .highlight_lines(highlight_lines)
+                    .line_numbers(line_numbers)
                     .header(header);
 
                 if let Some(dt_str) = default_theme {
@@ -294,6 +375,7 @@ impl ExFormatterOption {
                 background,
                 width,
                 highlight_lines,
+                line_numbers,
             } => {
                 let theme = theme.and_then(resolve_theme);
                 let background = match background {
@@ -310,6 +392,7 @@ impl ExFormatterOption {
                     .background(background)
                     .width(width)
                     .highlight_lines(highlight_lines)
+                    .line_numbers(line_numbers)
                     .build()
                     .map_err(|e| format!("Terminal builder error: {e:?}"))?;
                 formatter.set_stepped_highlight_lines(stepped_highlight_lines);

@@ -4,6 +4,8 @@ import { sep } from "node:path";
 import { buildCss, type ThemeData } from "@lumis-sh/themes";
 import githubLight from "@lumis-sh/themes/github_light";
 import { describe, expect, it } from "vitest";
+import { scopeToClass } from "../src/formatter/html.js";
+import { HIGHLIGHT_NAMES } from "../src/highlights.js";
 
 const require = createRequire(import.meta.url);
 
@@ -14,6 +16,8 @@ const sample: ThemeData = {
   highlights: {
     normal: { fg: "red", bg: "green" },
     keyword: { fg: "blue", italic: true },
+    line_number: { fg: "silver" },
+    "line_number.highlighted": { fg: "white", bold: true },
     "tag.attribute": { bg: "gray", bold: true },
   },
 };
@@ -30,6 +34,13 @@ describe("buildCss", () => {
 .l-keyword {
   color: blue;
   font-style: italic;
+}
+.l-line-number:not(.l-line-number-highlighted) {
+  color: silver;
+}
+.l-line-number-highlighted {
+  color: white;
+  font-weight: bold;
 }
 .l-tag-attribute {
   background-color: gray;
@@ -52,6 +63,13 @@ html[data-theme="dark"] .lumis {
 html[data-theme="dark"] .l-keyword {
   color: blue;
   font-style: italic;
+}
+html[data-theme="dark"] .l-line-number:not(.l-line-number-highlighted) {
+  color: silver;
+}
+html[data-theme="dark"] .l-line-number-highlighted {
+  color: white;
+  font-weight: bold;
 }
 html[data-theme="dark"] .l-tag-attribute {
   background-color: gray;
@@ -78,10 +96,49 @@ html[data-theme="dark"] .l-tag-attribute {
     expect(css).not.toContain("font-style: italic;");
   });
 
+  it("uses the regular line-number rule as the highlighted fallback", () => {
+    const fallbackTheme: ThemeData = {
+      name: "fallback",
+      appearance: "dark",
+      highlights: { line_number: { fg: "silver" } },
+    };
+
+    const css = buildCss(fallbackTheme);
+
+    expect(css).toContain(".l-line-number {\n  color: silver;\n}");
+    expect(css).not.toContain(".l-line-number:not(");
+  });
+
   it("matches the bundled stylesheet for the default config", () => {
     const bundled = readFileSync(require.resolve("@lumis-sh/themes/css/github_light"), "utf-8");
 
     expect(buildCss(githubLight)).toBe(bundled);
+  });
+
+  // `buildCss` spells a class from the scope; the HTML formatters read the
+  // generated `CLASSES` table. Two derivations of one name drift, and this is
+  // where they did: replacing `_` alongside `.` moved the nine scopes holding
+  // one — `attribute.c_sharp`, `module.c_sharp` and every `*.markdown_inline`
+  // scope — onto classes no element carries, with nothing to fail. This is the
+  // only file where both packages are in scope.
+  it("writes the classes the formatters write", () => {
+    const allScopes: ThemeData = {
+      name: "all-scopes",
+      appearance: "dark",
+      highlights: Object.fromEntries(HIGHLIGHT_NAMES.map((scope) => [scope, { fg: "red" }])),
+    };
+
+    const underscored = HIGHLIGHT_NAMES.filter((scope) => scope.includes("_"));
+    expect(underscored.length).toBeGreaterThanOrEqual(9);
+
+    const css = buildCss(allScopes);
+
+    for (const scope of HIGHLIGHT_NAMES) {
+      if (scope === "normal") continue;
+      expect(css, `${scope} has no rule for the class the formatters write`).toContain(
+        `\n.${scopeToClass(scope)} {\n`,
+      );
+    }
   });
 });
 

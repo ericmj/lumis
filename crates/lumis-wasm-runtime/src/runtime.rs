@@ -1,5 +1,6 @@
 //! Wasmtime-backed Tree-sitter highlighting runtime.
 
+use lumis_core::decorations::compose_rainbow_decorations;
 use lumis_core::events::HighlightEvent;
 use lumis_core::highlights::HIGHLIGHT_NAMES;
 use std::collections::HashMap;
@@ -679,18 +680,9 @@ impl Runtime {
             return Err(RuntimeError::InvalidMatchLimit(options.match_limit));
         }
         let root = self.load_through_store(name_or_alias)?;
-        let (root_id, languages, aliases) = {
+        let (languages, aliases) = {
             let catalog = self.catalog.read().expect("language catalog lock poisoned");
-            let root_id = catalog
-                .aliases
-                .get(name_or_alias)
-                .cloned()
-                .unwrap_or_else(|| name_or_alias.to_string());
-            (
-                root_id,
-                Arc::clone(&catalog.languages),
-                Arc::clone(&catalog.aliases),
-            )
+            (Arc::clone(&catalog.languages), Arc::clone(&catalog.aliases))
         };
 
         let mut lease = self.workers.lease()?;
@@ -793,7 +785,7 @@ impl Runtime {
                 source,
                 options.match_limit,
             )?;
-            collected = apply_rainbow_brackets(collected, ranges, &root_id);
+            collected = compose_rainbow_decorations(source, &collected, &ranges);
         }
 
         Ok(HighlightOutput {
@@ -912,67 +904,6 @@ fn rainbow_ranges(
 
     let pairs = bracket_pairs(query, tree.root_node(), source.as_bytes(), match_limit);
     Ok(colorize_bracket_pairs(pairs))
-}
-
-fn apply_rainbow_brackets(
-    events: Vec<HighlightEvent<'static>>,
-    ranges: Vec<RainbowRange>,
-    language: &str,
-) -> Vec<HighlightEvent<'static>> {
-    if ranges.is_empty() {
-        return events;
-    }
-
-    let mut output = Vec::new();
-    let mut range_index = 0usize;
-    for event in events {
-        let HighlightEvent::Source { start, end } = event else {
-            output.push(event);
-            continue;
-        };
-
-        let mut source_cursor = start;
-        while range_index < ranges.len() && ranges[range_index].end <= start {
-            range_index += 1;
-        }
-
-        let mut next_index = range_index;
-        while let Some(range) = ranges.get(next_index) {
-            if range.start >= end {
-                break;
-            }
-            if range.start < start || range.end > end {
-                next_index += 1;
-                continue;
-            }
-
-            if source_cursor < range.start {
-                output.push(HighlightEvent::Source {
-                    start: source_cursor,
-                    end: range.start,
-                });
-            }
-            output.push(HighlightEvent::Start {
-                scope_index: range.scope_index,
-                language: language.to_string(),
-            });
-            output.push(HighlightEvent::Source {
-                start: range.start,
-                end: range.end,
-            });
-            output.push(HighlightEvent::End);
-            source_cursor = range.end;
-            next_index += 1;
-        }
-
-        if source_cursor < end {
-            output.push(HighlightEvent::Source {
-                start: source_cursor,
-                end,
-            });
-        }
-    }
-    output
 }
 
 // A table-driven test's branches are its coverage; splitting one to satisfy the

@@ -53,6 +53,16 @@ function lightDarkHighlightStyle(formatter: HtmlMultiThemesFormatter): string | 
   return `background-color: light-dark(${light.bg}, ${dark.bg});`;
 }
 
+function lineNumberAttrs(formatter: HtmlMultiThemesFormatter, highlighted: boolean): HtmlAttrs {
+  return spanMultiThemesAttrs({
+    scope: highlighted ? "line_number.highlighted" : "line_number",
+    themes: formatter.themes,
+    defaultTheme: formatter.defaultTheme,
+    cssVariablePrefix: formatter.cssVariablePrefix,
+    italic: formatter.italic,
+  });
+}
+
 export function formatHtmlMultiThemes(
   source: string,
   events: readonly HighlightEvent[],
@@ -62,6 +72,11 @@ export function formatHtmlMultiThemes(
     language: formatter.language,
     theme: formatter.defaultTheme ? formatter.themes[formatter.defaultTheme] : undefined,
     lines: formatter.highlightLines?.lines,
+    lineNumbers: formatter.lineNumbers,
+    lineNumberAttrs: {
+      regular: lineNumberAttrs(formatter, false),
+      highlighted: lineNumberAttrs(formatter, true),
+    },
     highlightedAttrs: {
       className: formatter.highlightLines?.class,
       style: highlightLineStyle(formatter),
@@ -74,8 +89,9 @@ export function formatHtmlMultiThemes(
     themes: formatter.themes,
     defaultTheme: formatter.defaultTheme,
     cssVariablePrefix: formatter.cssVariablePrefix,
+    attrs: formatter.preAttrs,
   });
-  const code = openCodeTag(formatter.language);
+  const code = openCodeTag(formatter.language, formatter.codeAttrs);
 
   return wrapWithHeader(`${pre}${code}${body}${closingTags()}`, formatter.header);
 }

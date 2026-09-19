@@ -45,11 +45,14 @@ pub struct HtmlMultiThemes {
     #[builder(setter(into))]
     css_variable_prefix: String,
     pre_class: Option<String>,
+    pre_attrs: crate::formatter::html::HtmlAttrs,
+    code_attrs: crate::formatter::html::HtmlAttrs,
     italic: bool,
     include_highlights: bool,
     highlight_lines: Option<HighlightLines>,
     #[builder(setter(skip), default)]
     stepped_highlight_lines: Vec<SteppedLineRange>,
+    line_numbers: bool,
     header: Option<HtmlElement>,
 }
 
@@ -83,10 +86,13 @@ impl HtmlMultiThemesBuilder {
                 .take()
                 .unwrap_or_else(|| "--lumis".to_string()),
             pre_class: self.pre_class.take().flatten(),
+            pre_attrs: self.pre_attrs.take().unwrap_or_default(),
+            code_attrs: self.code_attrs.take().unwrap_or_default(),
             italic: self.italic.take().unwrap_or(false),
             include_highlights: self.include_highlights.take().unwrap_or(false),
             highlight_lines: self.highlight_lines.take().flatten(),
             stepped_highlight_lines: Vec::new(),
+            line_numbers: self.line_numbers.take().unwrap_or(false),
             header: self.header.take().flatten(),
         };
 
@@ -153,10 +159,13 @@ impl Default for HtmlMultiThemes {
             default_theme: None,
             css_variable_prefix: "--lumis".to_string(),
             pre_class: None,
+            pre_attrs: Vec::new(),
+            code_attrs: Vec::new(),
             italic: false,
             include_highlights: false,
             highlight_lines: None,
             stepped_highlight_lines: Vec::new(),
+            line_numbers: false,
             header: None,
         }
     }
@@ -173,6 +182,7 @@ impl HtmlMultiThemes {
         italic: bool,
         include_highlights: bool,
         highlight_lines: Option<HighlightLines>,
+        line_numbers: bool,
         header: Option<HtmlElement>,
     ) -> Self {
         Self {
@@ -181,10 +191,13 @@ impl HtmlMultiThemes {
             default_theme,
             css_variable_prefix,
             pre_class,
+            pre_attrs: Vec::new(),
+            code_attrs: Vec::new(),
             italic,
             include_highlights,
             highlight_lines,
             stepped_highlight_lines: Vec::new(),
+            line_numbers,
             header,
         }
     }
@@ -205,12 +218,13 @@ impl HtmlMultiThemes {
     }
 
     fn open_pre_tag(&self, output: &mut dyn Write) -> io::Result<()> {
-        crate::formatter::html::open_multi_themes_pre_tag(
+        crate::formatter::html::write_multi_themes_pre_tag(
             output,
             self.pre_class.as_deref(),
             &self.themes,
             self.default_theme_name(),
             &self.css_variable_prefix,
+            &self.pre_attrs,
         )
     }
 
@@ -285,6 +299,24 @@ impl HtmlMultiThemes {
             self.include_highlights,
         )
     }
+
+    fn line_number_attrs(&self, highlighted: bool) -> String {
+        let scope = if highlighted {
+            "line_number.highlighted"
+        } else {
+            "line_number"
+        };
+
+        crate::formatter::html::span_multi_themes_attrs(
+            scope,
+            None,
+            &self.themes,
+            self.default_theme_name(),
+            &self.css_variable_prefix,
+            self.italic,
+            false,
+        )
+    }
 }
 
 impl<T> Formatter<T> for HtmlMultiThemes {
@@ -305,16 +337,25 @@ impl<T> Formatter<T> for HtmlMultiThemes {
         }
 
         self.open_pre_tag(&mut buffer)?;
-        crate::formatter::html::open_code_tag(&mut buffer, &self.language)?;
+        crate::formatter::html::write_code_tag(&mut buffer, self.language, &self.code_attrs)?;
 
         let (class_suffix, style) = self.get_line_attrs(true);
+        let line_number_attrs = self.line_numbers.then(|| self.line_number_attrs(false));
+        let highlighted_line_number_attrs = self.line_numbers.then(|| self.line_number_attrs(true));
         crate::formatter::html::write_html_lines(
             &mut buffer,
             source,
             events,
-            &self.line_selection(),
+            &crate::formatter::html::HtmlLines {
+                language: self.language,
+                selection: &self.line_selection(),
+                numbered: self.line_numbers,
+                line_number_attrs: line_number_attrs.as_deref(),
+                highlighted_line_number_attrs: highlighted_line_number_attrs.as_deref(),
+                highlighted_class: class_suffix.as_deref(),
+                highlighted_style: style.as_deref(),
+            },
             &|scope_index, language| self.span_attrs_from_index(scope_index, language),
-            (class_suffix.as_deref(), style.as_deref()),
         )?;
 
         crate::formatter::html::closing_tags(&mut buffer)?;
@@ -370,6 +411,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             None,
         );
         let mut output = Vec::new();
@@ -423,6 +465,7 @@ mod tests {
                 style: Some(HighlightLinesStyle::Theme),
                 class: None,
             }),
+            false,
             None,
         );
         let mut output = Vec::new();

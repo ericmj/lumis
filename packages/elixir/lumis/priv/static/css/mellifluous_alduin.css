@@ -144,6 +144,14 @@
 .l-label-markdown {
   color: #87875f;
 }
+.l-line-number:not(.l-line-number-highlighted) {
+  color: #696969;
+  background-color: #161616;
+}
+.l-line-number-highlighted {
+  color: #696969;
+  background-color: #202020;
+}
 .l-markup-environment {
   color: #878787;
 }

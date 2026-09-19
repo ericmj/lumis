@@ -3,7 +3,10 @@
 //! Works with pre-computed highlight events from any source.
 
 use super::{ansi, check_source_ranges, source_text, Formatter};
-use crate::decorations::{compose_line_decorations, Decoration, LineSelection, SteppedLineRange};
+use crate::decorations::{
+    compose_line_decorations, gutter_width, last_line_number, rainbow_scope_index, Decoration,
+    LineSelection, SteppedLineRange,
+};
 use crate::events::HighlightEvent;
 use crate::languages::Language;
 use crate::themes::{Style, Theme};
@@ -53,6 +56,7 @@ pub struct Terminal {
     highlight_lines: Option<HighlightLines>,
     #[builder(setter(skip), default)]
     stepped_highlight_lines: Vec<SteppedLineRange>,
+    line_numbers: bool,
 }
 
 impl TerminalBuilder {
@@ -78,6 +82,7 @@ impl Terminal {
         background: Background,
         width: Option<usize>,
         highlight_lines: Option<HighlightLines>,
+        line_numbers: bool,
     ) -> Self {
         Self {
             language,
@@ -86,6 +91,7 @@ impl Terminal {
             width,
             highlight_lines,
             stepped_highlight_lines: Vec::new(),
+            line_numbers,
         }
     }
 
@@ -173,6 +179,90 @@ impl Terminal {
 
         self.theme.as_ref()?.get_style("highlighted")?.bg.as_deref()
     }
+
+    /// The Neovim number-column style for this line.
+    fn gutter_style(&self, highlighted: bool) -> Option<&Style> {
+        let scope = if highlighted {
+            "line_number.highlighted"
+        } else {
+            "line_number"
+        };
+
+        self.theme.as_ref()?.get_style(scope)
+    }
+}
+
+/// Write one line's number, right-aligned in `width` columns and followed by a
+/// space, and return the columns it took.
+fn write_gutter(
+    output: &mut dyn Write,
+    number: usize,
+    width: usize,
+    style: Option<&Style>,
+    line_bg: Option<&str>,
+) -> io::Result<usize> {
+    let gutter = format!("{number:>width$} ");
+    let columns = gutter.chars().count();
+    write!(output, "{}", paint_with_background(&gutter, style, line_bg))?;
+
+    Ok(columns)
+}
+
+struct RenderState<'a> {
+    scope_stack: Vec<(usize, String)>,
+    line_width: usize,
+    line_bg: Option<&'a str>,
+    pending_number: Option<(usize, bool)>,
+    decorations: Vec<Decoration>,
+}
+
+impl<'a> RenderState<'a> {
+    fn new(line_bg: Option<&'a str>) -> Self {
+        Self {
+            scope_stack: Vec::new(),
+            line_width: 0,
+            line_bg,
+            pending_number: None,
+            decorations: Vec::new(),
+        }
+    }
+
+    fn start_decoration(
+        &mut self,
+        decoration: Decoration,
+        fallback_bg: Option<&'a str>,
+        highlight_bg: Option<&'a str>,
+        gutter: Option<usize>,
+        language: Language,
+    ) {
+        self.decorations.push(decoration);
+        match decoration {
+            Decoration::Line {
+                number,
+                highlighted,
+            } => {
+                self.line_bg = if highlighted {
+                    highlight_bg.or(fallback_bg)
+                } else {
+                    fallback_bg
+                };
+                self.line_width = 0;
+                self.pending_number = gutter.is_some().then_some((number, highlighted));
+            }
+            Decoration::RainbowBracket { depth } => self
+                .scope_stack
+                .push((rainbow_scope_index(depth), language.id_name().to_string())),
+        }
+    }
+
+    fn end_decoration(&mut self) {
+        if matches!(
+            self.decorations.pop(),
+            Some(Decoration::RainbowBracket { .. })
+        ) {
+            self.scope_stack.pop();
+        }
+    }
 }
 
 impl Default for Terminal {
@@ -184,6 +274,7 @@ impl Default for Terminal {
             width: None,
             highlight_lines: None,
             stepped_highlight_lines: Vec::new(),
+            line_numbers: false,
         }
     }
 }
@@ -200,61 +291,100 @@ impl<T> Formatter<T> for Terminal {
         output: &mut dyn Write,
     ) -> io::Result<()> {
         let source_bytes = source.as_bytes();
-        let mut scope_stack: Vec<(usize, String)> = Vec::new();
-        let mut line_width = 0usize;
         let fallback_bg = self.fallback_bg();
         let highlight_bg = self.highlight_bg();
 
         // A terminal writes one line after another whether or not it is told
-        // which lines to mark, so the line decorations are only worth composing
-        // when there is something to mark. Without them the stream, and the
-        // output, are exactly what they were.
+        // which lines to mark or number, so the line decorations are only worth
+        // composing when one of the two was asked for. Without them the stream,
+        // and the output, are exactly what they were.
         let selection = self.line_selection();
         let composed;
-        let events: &[HighlightEvent<'_, T>] = if selection.is_empty() {
+        let events: &[HighlightEvent<'_, T>] = if selection.is_empty() && !self.line_numbers {
             events
         } else {
             check_source_ranges(source_bytes, events)?;
             composed = compose_line_decorations(source, events, &selection);
             &composed
         };
-        let mut line_bg = fallback_bg;
+        // The gutter is padded to the widest number it will show, which is only
+        // known once the lines are.
+        let gutter = self
+            .line_numbers
+            .then(|| gutter_width(last_line_number(events)));
+        let mut state = RenderState::new(fallback_bg);
 
         for event in events {
             match event {
                 HighlightEvent::Source { start, end } => {
-                    let text = source_text(source_bytes, *start, *end)?;
-                    let styled = self.active_style(&scope_stack);
-                    line_width = self.write_source(output, text, styled, line_bg, line_width)?;
+                    self.write_event_source(
+                        output,
+                        source_bytes,
+                        (*start, *end),
+                        fallback_bg,
+                        gutter,
+                        &mut state,
+                    )?;
                 }
                 HighlightEvent::Start {
                     scope_index,
                     language,
-                } => scope_stack.push((*scope_index, language.clone())),
+                } => state.scope_stack.push((*scope_index, language.clone())),
                 HighlightEvent::End => {
-                    scope_stack.pop();
+                    state.scope_stack.pop();
                 }
-                HighlightEvent::DecorationStart {
-                    decoration: Decoration::Line { highlighted, .. },
-                } => {
-                    line_bg = if *highlighted {
-                        highlight_bg.or(fallback_bg)
-                    } else {
-                        fallback_bg
-                    };
-                    line_width = 0;
+                HighlightEvent::DecorationStart { decoration } => {
+                    state.start_decoration(
+                        *decoration,
+                        fallback_bg,
+                        highlight_bg,
+                        gutter,
+                        self.language,
+                    );
                 }
+                HighlightEvent::DecorationEnd => state.end_decoration(),
                 // Caller annotations carry data this formatter has never seen.
-                HighlightEvent::AnnotationStart { .. }
-                | HighlightEvent::AnnotationEnd
-                | HighlightEvent::DecorationEnd => {}
+                HighlightEvent::AnnotationStart { .. } | HighlightEvent::AnnotationEnd => {}
             }
         }
 
         if !source.ends_with('\n') {
-            write_line_padding(output, line_bg, self.width, line_width)?;
+            write_line_padding(output, state.line_bg, self.width, state.line_width)?;
         }
 
+        Ok(())
+    }
+}
+
+impl Terminal {
+    fn write_event_source(
+        &self,
+        output: &mut dyn Write,
+        source: &[u8],
+        range: (usize, usize),
+        fallback_bg: Option<&str>,
+        gutter: Option<usize>,
+        state: &mut RenderState<'_>,
+    ) -> io::Result<()> {
+        let text = source_text(source, range.0, range.1)?;
+        if let (false, Some((number, highlighted)), Some(width)) =
+            (text.is_empty(), state.pending_number, gutter)
+        {
+            // Neovim draws the number column with `CursorLineNr` alone, so
+            // `CursorLine` does not reach it: a highlighted line's background
+            // starts at its text.
+            state.line_width = write_gutter(
+                output,
+                number,
+                width,
+                self.gutter_style(highlighted),
+                fallback_bg,
+            )?;
+            state.pending_number = None;
+        }
+        let styled = self.active_style(&state.scope_stack);
+        state.line_width =
+            self.write_source(output, text, styled, state.line_bg, state.line_width)?;
         Ok(())
     }
 }
@@ -316,6 +446,7 @@ fn display_width(text: &str) -> usize {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::fmt::Write as _;
 
     fn theme_with_background(bg: &str) -> Theme {
         Theme {
@@ -398,6 +529,7 @@ mod tests {
             Background::Color("#282a36".to_string()),
             Some(5),
             None,
+            false,
         );
         let events: [HighlightEvent<'_, ()>; 1] = [HighlightEvent::Source { start: 0, end: 2 }];
         let mut output = Vec::new();
@@ -418,6 +550,7 @@ mod tests {
             Background::Color("#282a36".to_string()),
             Some(4),
             None,
+            false,
         );
         let events: [HighlightEvent<'_, ()>; 1] = [HighlightEvent::Source { start: 0, end: 3 }];
         let mut output = Vec::new();
@@ -438,6 +571,7 @@ mod tests {
             Background::Theme,
             None,
             None,
+            false,
         );
         let events: [HighlightEvent<'_, ()>; 1] = [HighlightEvent::Source { start: 0, end: 2 }];
         let mut output = Vec::new();
@@ -485,6 +619,7 @@ mod tests {
                 lines: std::iter::once(2..=2).collect(),
                 background: None,
             }),
+            false,
         );
 
         assert_eq!(
@@ -504,6 +639,7 @@ mod tests {
                 lines: std::iter::once(1..=1).collect(),
                 background: Some("#ff0000".to_string()),
             }),
+            false,
         );
 
         assert!(render_lines(&formatter, "a\nb").contains("\u{1b}[48;2;255;0;0m"));
@@ -522,6 +658,7 @@ mod tests {
                 lines: std::iter::once(1..=1).collect(),
                 background: Some("#282a36".to_string()),
             }),
+            false,
         );
 
         assert_eq!(
@@ -543,9 +680,197 @@ mod tests {
                 lines: std::iter::once(1..=1).collect(),
                 background: None,
             }),
+            false,
         );
 
         assert_eq!(render_lines(&formatter, "a\nb"), "a\nb");
+    }
+
+    fn numbered(theme: Option<Theme>, width: Option<usize>) -> Terminal {
+        Terminal::new(
+            Language::PlainText,
+            theme,
+            Background::Inherit,
+            width,
+            None,
+            true,
+        )
+    }
+
+    /// The gutter is padded to the widest number the render will show, which is
+    /// only known once the lines are.
+    #[test]
+    fn every_number_is_padded_to_the_widest_one() {
+        let source = (1..=10).fold(String::new(), |mut acc, n| {
+            let _ = writeln!(acc, "{n}");
+            acc
+        });
+
+        let rendered = render_lines(&numbered(None, None), &source);
+
+        assert_eq!(rendered.lines().next(), Some(" 1 1"));
+        assert!(rendered.contains("10 10"), "{rendered}");
+    }
+
+    /// A source ending in a newline opens one more line, and a terminal writes
+    /// nothing for it. Numbering it would leave a bare number after the output.
+    #[test]
+    fn the_line_a_trailing_newline_opens_carries_no_number() {
+        let rendered = render_lines(&numbered(None, None), "a\n");
+
+        assert_eq!(rendered, "1 a\n");
+    }
+
+    /// A blank line in the middle is still a line the terminal writes, so it is
+    /// still numbered.
+    #[test]
+    fn a_blank_line_keeps_its_number() {
+        let rendered = render_lines(&numbered(None, None), "a\n\nb");
+
+        assert_eq!(rendered, "1 a\n2 \n3 b");
+    }
+
+    #[test]
+    fn an_empty_document_renders_nothing() {
+        assert_eq!(render_lines(&numbered(None, None), ""), "");
+    }
+
+    /// The gutter takes columns, so the padding that fills a line out to `width`
+    /// has to count them.
+    #[test]
+    fn the_gutter_counts_towards_the_width() {
+        let formatter = Terminal::new(
+            Language::PlainText,
+            None,
+            Background::Color("#282a36".to_string()),
+            Some(6),
+            None,
+            true,
+        );
+
+        let rendered = render_lines(&formatter, "ab");
+
+        // "1 ab" is four columns of the six, so two are padded.
+        assert_eq!(
+            rendered,
+            "\u{1b}[0m\u{1b}[48;2;40;42;54m1 \u{1b}[0m\u{1b}[0m\u{1b}[48;2;40;42;54mab\u{1b}[0m\u{1b}[0m\u{1b}[48;2;40;42;54m  \u{1b}[0m"
+        );
+    }
+
+    /// Neovim draws the number column with `CursorLineNr` alone, so `CursorLine`
+    /// does not reach it. A highlighted line's background starts at its text.
+    #[test]
+    fn a_highlighted_line_does_not_paint_its_gutter() {
+        let formatter = Terminal::new(
+            Language::PlainText,
+            None,
+            Background::Inherit,
+            None,
+            Some(HighlightLines {
+                lines: std::iter::once(1..=1).collect(),
+                background: Some("#ff0000".to_string()),
+            }),
+            true,
+        );
+
+        let rendered = render_lines(&formatter, "a\nb");
+
+        assert_eq!(
+            rendered, "1 \u{1b}[0m\u{1b}[48;2;255;0;0ma\u{1b}[0m\n2 b",
+            "the gutter is outside the highlight: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn the_gutter_uses_the_line_number_style() {
+        let theme = theme_with_scope_style(
+            "line_number",
+            Style {
+                fg: Some("#6272a4".to_string()),
+                italic: true,
+                ..Default::default()
+            },
+        );
+
+        let rendered = render_lines(&numbered(Some(theme), None), "a");
+
+        assert_eq!(
+            rendered,
+            "\u{1b}[0m\u{1b}[38;2;98;114;164m\u{1b}[3m1 \u{1b}[0ma"
+        );
+    }
+
+    #[test]
+    fn a_highlighted_gutter_uses_the_cursor_line_number_style() {
+        let theme = Theme {
+            name: "test".to_string(),
+            highlights: BTreeMap::from([
+                (
+                    "line_number".to_string(),
+                    Style {
+                        fg: Some("#6272a4".to_string()),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "line_number.highlighted".to_string(),
+                    Style {
+                        fg: Some("#ff79c6".to_string()),
+                        bold: true,
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        let formatter = Terminal::new(
+            Language::PlainText,
+            Some(theme),
+            Background::Inherit,
+            None,
+            Some(HighlightLines {
+                lines: std::iter::once(1..=1).collect(),
+                background: None,
+            }),
+            true,
+        );
+
+        let rendered = render_lines(&formatter, "a\nb");
+
+        assert!(
+            rendered.starts_with("\u{1b}[0m\u{1b}[38;2;255;121;198m\u{1b}[1m1 \u{1b}[0ma"),
+            "the highlighted gutter should use CursorLineNr: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\n\u{1b}[0m\u{1b}[38;2;98;114;164m2 \u{1b}[0mb"),
+            "the regular gutter should use LineNr: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_highlighted_gutter_falls_back_to_the_line_number_style() {
+        let theme = theme_with_scope_style(
+            "line_number",
+            Style {
+                fg: Some("#6272a4".to_string()),
+                ..Default::default()
+            },
+        );
+        let formatter = Terminal::new(
+            Language::PlainText,
+            Some(theme),
+            Background::Inherit,
+            None,
+            Some(HighlightLines {
+                lines: std::iter::once(1..=1).collect(),
+                background: None,
+            }),
+            true,
+        );
+
+        let rendered = render_lines(&formatter, "a");
+
+        assert_eq!(rendered, "\u{1b}[0m\u{1b}[38;2;98;114;164m1 \u{1b}[0ma");
     }
 
     /// Line composition clips a `Source` to the document, so asking for
@@ -568,6 +893,7 @@ mod tests {
                 Background::Inherit,
                 None,
                 highlight_lines,
+                false,
             );
             let mut output = Vec::new();
 
@@ -594,6 +920,7 @@ mod tests {
             Background::Inherit,
             None,
             None,
+            false,
         );
         let events: [HighlightEvent<'_, ()>; 3] = [
             HighlightEvent::Start {

@@ -2,7 +2,9 @@
 //!
 //! These helpers work with language names as strings, making them independent of tree-sitter.
 
-use crate::decorations::{compose_line_decorations, Decoration, LineSelection};
+use crate::decorations::{
+    compose_line_decorations, rainbow_scope_index, Decoration, LineSelection,
+};
 use crate::events::HighlightEvent;
 use crate::languages::Language;
 use crate::themes::{Style, TextDecoration, Theme, UnderlineStyle};
@@ -509,40 +511,82 @@ pub fn wrap_line(
     style: Option<&str>,
 ) -> String {
     let mut line = Vec::with_capacity(content.len() + 48);
-    let _ = LineTag::new(class_suffix, style).write(&mut line, line_number);
+    let _ = LineTag::new(class_suffix, style, false, false, None).write(&mut line, line_number);
     line.extend_from_slice(content.as_bytes());
     line.extend_from_slice(b"</div>");
 
     String::from_utf8(line).expect("the tag and its content are both UTF-8")
 }
 
+/// The class the gutter element carries, for a stylesheet to hang a column off.
+///
+/// The number is written out rather than left to `content: attr(data-line)`
+/// because a formatter that cannot reach a stylesheet — `terminal` — has to show
+/// the same thing, and because generated content is not in the document a reader
+/// can inspect. It is `aria-hidden`, so a screen reader is not read a number
+/// before every line.
+///
+/// Crate-visible rather than private so the CSS builder writes the same two
+/// names this module does, instead of deriving its own from the scope.
+pub(crate) const LINE_NUMBER_CLASS: &str = "l-line-number";
+pub(crate) const HIGHLIGHTED_LINE_NUMBER_CLASS: &str = "l-line-number-highlighted";
+
 /// Everything in a line's opening tag that does not change from line to line.
 ///
 /// A document's lines differ only in their number and in whether they are
 /// highlighted, so the class and style attributes — which cost an escape each —
 /// are assembled once rather than once per line.
-struct LineTag(String);
+struct LineTag {
+    open: String,
+    gutter_open: Option<String>,
+}
 
 impl LineTag {
-    fn new(class_suffix: Option<&str>, style: Option<&str>) -> Self {
-        let mut tag = String::from("<div class=\"");
+    fn new(
+        class_suffix: Option<&str>,
+        style: Option<&str>,
+        numbered: bool,
+        highlighted: bool,
+        gutter_attrs: Option<&str>,
+    ) -> Self {
+        let mut open = String::from("<div class=\"");
         match class_suffix {
-            Some(suffix) => tag.push_str(&escape_attr(&format!("l-line{suffix}"))),
-            None => tag.push_str("l-line"),
+            Some(suffix) => open.push_str(&escape_attr(&format!("l-line{suffix}"))),
+            None => open.push_str("l-line"),
         }
-        tag.push('"');
+        open.push('"');
 
         if let Some(style) = style {
-            let _ = write!(tag, " style=\"{}\"", escape_attr(style));
+            let _ = write!(open, " style=\"{}\"", escape_attr(style));
         }
 
-        tag.push_str(" data-line=\"");
-        Self(tag)
+        open.push_str(" data-line=\"");
+        let gutter_open = numbered.then(|| {
+            let mut gutter = format!("<span class=\"{LINE_NUMBER_CLASS}");
+            if highlighted {
+                let _ = write!(gutter, " {HIGHLIGHTED_LINE_NUMBER_CLASS}");
+            }
+            gutter.push('"');
+            if let Some(attrs) = gutter_attrs.filter(|attrs| !attrs.is_empty()) {
+                gutter.push(' ');
+                gutter.push_str(attrs);
+            }
+            gutter.push_str(" aria-hidden=\"true\">");
+            gutter
+        });
+
+        Self { open, gutter_open }
     }
 
     fn write(&self, output: &mut dyn Write, line_number: usize) -> io::Result<()> {
-        output.write_all(self.0.as_bytes())?;
-        write!(output, "{line_number}\">")
+        output.write_all(self.open.as_bytes())?;
+        write!(output, "{line_number}\">")?;
+
+        if let Some(gutter_open) = &self.gutter_open {
+            write!(output, "{gutter_open}{line_number}</span>")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -579,25 +623,249 @@ pub fn scope_to_class(scope: &str) -> String {
         .map_or_else(|| "l-text".to_string(), |class| format!("l-{class}"))
 }
 
+/// What an HTML attribute carries.
+///
+/// HTML writes an attribute two ways, `name="value"` and a bare `name` for the
+/// boolean ones such as `hidden` or `inert`, and both have to survive a merge.
+/// [`AttrValue::Absent`] is the third state that merging needs: it is how an
+/// authored attribute removes one Lumis generated, so `translate` can be taken
+/// off `<code>` rather than only overwritten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttrValue {
+    /// Rendered as `name="value"`, with the value escaped.
+    Value(String),
+    /// Rendered as a bare `name`.
+    Present,
+    /// Not rendered, and removes a generated attribute of the same name.
+    Absent,
+}
+
+impl AttrValue {
+    /// The string this renders as, or `None` when it renders bare or not at all.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Present | Self::Absent => None,
+        }
+    }
+}
+
+impl From<String> for AttrValue {
+    fn from(value: String) -> Self {
+        Self::Value(value)
+    }
+}
+
+impl From<&str> for AttrValue {
+    fn from(value: &str) -> Self {
+        Self::Value(value.to_string())
+    }
+}
+
+impl From<bool> for AttrValue {
+    fn from(value: bool) -> Self {
+        if value {
+            Self::Present
+        } else {
+            Self::Absent
+        }
+    }
+}
+
+/// Ordered HTML attribute name/value pairs.
+///
+/// Values stay unescaped until the opening tag is rendered. Keeping the
+/// structured form lets callers merge attributes without parsing HTML and lets
+/// Lumis escape every value exactly once.
+pub type HtmlAttrs = Vec<(String, AttrValue)>;
+
+/// Whether `name` is a name HTML can carry, per the attribute-name production.
+///
+/// Escaping a name is not an option, which is why this exists: a space needs no
+/// escaping and splits one name into two attributes, so `x onclick=alert(1)`
+/// would render an event handler no matter how the value was treated.
+#[must_use]
+pub fn is_valid_attr_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.chars().any(|character| {
+            character.is_whitespace()
+                || character.is_control()
+                || matches!(character, '"' | '\'' | '>' | '/' | '=')
+        })
+}
+
+fn merge_classes(current: &str, additional: &str) -> String {
+    let mut classes: Vec<&str> = Vec::new();
+
+    for candidate in current
+        .split_ascii_whitespace()
+        .chain(additional.split_ascii_whitespace())
+    {
+        if !classes.contains(&candidate) {
+            classes.push(candidate);
+        }
+    }
+
+    classes.join(" ")
+}
+
+fn append_style(current: &str, additional: &str) -> String {
+    let current = current.trim();
+    let additional = additional.trim();
+
+    match (current.is_empty(), additional.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => additional.to_string(),
+        (false, true) => current.to_string(),
+        (false, false) if current.ends_with(';') => format!("{current} {additional}"),
+        (false, false) => format!("{current}; {additional}"),
+    }
+}
+
+/// `class` unions, `style` appends, and every other name replaces.
+fn merged_value(name: &str, current: Option<&AttrValue>, authored: &AttrValue) -> AttrValue {
+    let Some(authored) = authored.as_str() else {
+        return AttrValue::Present;
+    };
+    let current = current.and_then(AttrValue::as_str).unwrap_or_default();
+
+    if name.eq_ignore_ascii_case("class") {
+        AttrValue::Value(merge_classes(current, authored))
+    } else if name.eq_ignore_ascii_case("style") {
+        AttrValue::Value(append_style(current, authored))
+    } else {
+        AttrValue::Value(authored.to_string())
+    }
+}
+
+fn merge_attrs(mut generated: HtmlAttrs, authored: &[(String, AttrValue)]) -> HtmlAttrs {
+    for (name, value) in authored {
+        let existing = generated
+            .iter()
+            .position(|(candidate, _)| candidate.eq_ignore_ascii_case(name));
+
+        if matches!(value, AttrValue::Absent) {
+            if let Some(index) = existing {
+                generated.remove(index);
+            }
+            continue;
+        }
+
+        let merged = merged_value(name, existing.map(|index| &generated[index].1), value);
+
+        match existing {
+            Some(index) => generated[index].1 = merged,
+            // An authored `class=""` on a tag that generated none adds nothing.
+            None if merged.as_str().is_some_and(str::is_empty) => {}
+            None => generated.push((name.clone(), merged)),
+        }
+    }
+
+    generated
+}
+
+/// Generate an opening tag from attributes, escaping every value.
+///
+/// This is what the `*_attrs` helpers are built for: merge their result with
+/// your own attributes, then write the whole thing here rather than assembling
+/// the string and remembering to escape it.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidInput`] for an attribute name HTML cannot
+/// carry, because rendering one would let it break out of the tag, and the
+/// underlying error if `output` fails.
+pub fn open_tag(output: &mut dyn Write, name: &str, attrs: &HtmlAttrs) -> io::Result<()> {
+    write!(output, "<{name}")?;
+
+    for (attr_name, value) in attrs {
+        if !is_valid_attr_name(attr_name) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid HTML attribute name: {attr_name:?}"),
+            ));
+        }
+
+        match value {
+            AttrValue::Value(value) => write!(output, " {attr_name}=\"{}\"", escape_attr(value))?,
+            AttrValue::Present => write!(output, " {attr_name}")?,
+            AttrValue::Absent => {}
+        }
+    }
+
+    output.write_all(b">")
+}
+
+/// Build attributes for the `<pre>` tag used by inline and linked HTML.
+///
+/// Generated values come first. Authored `class` values are unioned with the
+/// `lumis` and `pre_class` classes, authored `style` is appended to the theme
+/// style, and every other authored value replaces a generated default.
+pub fn pre_attrs(
+    pre_class: Option<&str>,
+    theme: Option<&Theme>,
+    attrs: &[(String, AttrValue)],
+) -> HtmlAttrs {
+    let class = pre_class.map_or_else(|| "lumis".to_string(), |value| format!("lumis {value}"));
+    let mut generated = vec![("class".to_string(), AttrValue::Value(class))];
+    if let Some(style) = theme.and_then(|theme| theme.pre_style(" ")) {
+        generated.push(("style".to_string(), AttrValue::Value(style)));
+    }
+
+    merge_attrs(generated, attrs)
+}
+
+pub(crate) fn write_pre_tag(
+    output: &mut dyn Write,
+    pre_class: Option<&str>,
+    theme: Option<&Theme>,
+    attrs: &[(String, AttrValue)],
+) -> io::Result<()> {
+    open_tag(output, "pre", &pre_attrs(pre_class, theme, attrs))
+}
+
 /// Generate an opening `<pre>` tag with optional class and theme styles.
 pub fn open_pre_tag(
     output: &mut dyn Write,
     pre_class: Option<&str>,
     theme: Option<&Theme>,
 ) -> io::Result<()> {
-    let class = match pre_class {
-        Some(pre_class) => escape_attr(&format!("lumis {pre_class}")),
-        None => "lumis".to_string(),
-    };
+    write_pre_tag(output, pre_class, theme, &[])
+}
 
-    write!(
+/// Build attributes for the multi-theme `<pre>` tag.
+pub fn multi_themes_pre_attrs(
+    pre_class: Option<&str>,
+    themes: &std::collections::HashMap<String, Theme>,
+    default_theme: Option<&str>,
+    css_variable_prefix: &str,
+    attrs: &[(String, AttrValue)],
+) -> HtmlAttrs {
+    let mut generated = vec![(
+        "class".to_string(),
+        AttrValue::Value(multi_themes_pre_classes(pre_class, themes)),
+    )];
+    let style = multi_themes_pre_style(themes, default_theme, css_variable_prefix);
+    if !style.is_empty() {
+        generated.push(("style".to_string(), AttrValue::Value(style)));
+    }
+
+    merge_attrs(generated, attrs)
+}
+
+pub(crate) fn write_multi_themes_pre_tag(
+    output: &mut dyn Write,
+    pre_class: Option<&str>,
+    themes: &std::collections::HashMap<String, Theme>,
+    default_theme: Option<&str>,
+    css_variable_prefix: &str,
+    attrs: &[(String, AttrValue)],
+) -> io::Result<()> {
+    open_tag(
         output,
-        "<pre class=\"{}\"{}>",
-        class,
-        theme
-            .and_then(|theme| theme.pre_style(" "))
-            .map(|pre_style| format!(" style=\"{}\"", escape_attr(&pre_style)))
-            .unwrap_or_default(),
+        "pre",
+        &multi_themes_pre_attrs(pre_class, themes, default_theme, css_variable_prefix, attrs),
     )
 }
 
@@ -609,14 +877,14 @@ pub fn open_multi_themes_pre_tag(
     default_theme: Option<&str>,
     css_variable_prefix: &str,
 ) -> io::Result<()> {
-    let classes = escape_attr(&multi_themes_pre_classes(pre_class, themes));
-    let style = multi_themes_pre_style(themes, default_theme, css_variable_prefix);
-
-    write!(output, "<pre class=\"{classes}\"")?;
-    if !style.is_empty() {
-        write!(output, " style=\"{}\"", escape_attr(&style))?;
-    }
-    write!(output, ">")
+    write_multi_themes_pre_tag(
+        output,
+        pre_class,
+        themes,
+        default_theme,
+        css_variable_prefix,
+        &[],
+    )
 }
 
 fn multi_themes_pre_classes(
@@ -631,7 +899,8 @@ fn multi_themes_pre_classes(
 
     classes.extend(sorted_theme_names(themes).into_iter().map(str::to_string));
 
-    classes.join(" ")
+    // A `pre_class` naming one of the themes would otherwise appear twice.
+    merge_classes(&classes.join(" "), "")
 }
 
 fn push_normal_theme_vars(
@@ -706,13 +975,32 @@ fn multi_themes_pre_style(
     styles.join(" ")
 }
 
+/// Build attributes for the `<code>` tag used by every HTML formatter.
+pub fn code_attrs(lang: &Language, attrs: &[(String, AttrValue)]) -> HtmlAttrs {
+    merge_attrs(
+        vec![
+            (
+                "class".to_string(),
+                AttrValue::Value(format!("language-{}", lang.id_name())),
+            ),
+            ("translate".to_string(), AttrValue::Value("no".to_string())),
+            ("tabindex".to_string(), AttrValue::Value("0".to_string())),
+        ],
+        attrs,
+    )
+}
+
+pub(crate) fn write_code_tag(
+    output: &mut dyn Write,
+    lang: Language,
+    attrs: &[(String, AttrValue)],
+) -> io::Result<()> {
+    open_tag(output, "code", &code_attrs(&lang, attrs))
+}
+
 /// Generate an opening `<code>` tag with language class.
 pub fn open_code_tag(output: &mut dyn Write, lang: &Language) -> io::Result<()> {
-    write!(
-        output,
-        "<code class=\"language-{}\" translate=\"no\" tabindex=\"0\">",
-        lang.id_name()
-    )
+    write_code_tag(output, *lang, &[])
 }
 
 /// Generate closing `</code>` tag.
@@ -778,12 +1066,17 @@ where
 {
     let mut lines = Vec::new();
     let mut line = String::new();
+    let decoration_language = events
+        .iter()
+        .find_map(HighlightEvent::language)
+        .unwrap_or_default();
 
     write_line_events(
         &compose_line_decorations(source, events, &LineSelection::default()),
         source,
+        decoration_language,
         |fragment| match fragment {
-            LineFragment::Open(_) => {}
+            LineFragment::OpenLine { .. } => {}
             LineFragment::Close(ending) => {
                 line.push_str(ending);
                 lines.push(std::mem::take(&mut line));
@@ -802,14 +1095,14 @@ where
 /// One step of a line-decorated event stream, with its text already sliced.
 pub(crate) enum LineFragment<'a> {
     /// A line begins.
-    Open(Decoration),
+    OpenLine { number: usize, highlighted: bool },
     /// The current line ends with the source terminator, when it had one.
     Close(&'a str),
     /// Unescaped source text, never spanning a line boundary.
     Text(&'a str),
-    /// A syntax scope begins.
+    /// A syntax or built-in decoration scope begins.
     SpanOpen(usize, &'a str),
-    /// The innermost syntax scope ends.
+    /// The innermost syntax or built-in decoration scope ends.
     SpanClose,
 }
 
@@ -823,19 +1116,40 @@ pub(crate) enum LineFragment<'a> {
 pub(crate) fn write_line_events<'a, T, F>(
     events: &'a [HighlightEvent<'_, T>],
     source: &'a str,
+    decoration_language: &'a str,
     mut on_fragment: F,
 ) where
     F: FnMut(LineFragment<'a>),
 {
     let mut ending = "";
+    let mut decorations = Vec::new();
 
     for event in events {
         match event {
             HighlightEvent::DecorationStart { decoration } => {
-                ending = "";
-                on_fragment(LineFragment::Open(*decoration));
+                decorations.push(*decoration);
+                match decoration {
+                    Decoration::Line {
+                        number,
+                        highlighted,
+                    } => {
+                        ending = "";
+                        on_fragment(LineFragment::OpenLine {
+                            number: *number,
+                            highlighted: *highlighted,
+                        });
+                    }
+                    Decoration::RainbowBracket { depth } => on_fragment(LineFragment::SpanOpen(
+                        rainbow_scope_index(*depth),
+                        decoration_language,
+                    )),
+                }
             }
-            HighlightEvent::DecorationEnd => on_fragment(LineFragment::Close(ending)),
+            HighlightEvent::DecorationEnd => match decorations.pop() {
+                Some(Decoration::Line { .. }) => on_fragment(LineFragment::Close(ending)),
+                Some(Decoration::RainbowBracket { .. }) => on_fragment(LineFragment::SpanClose),
+                None => {}
+            },
             HighlightEvent::Start {
                 scope_index,
                 language,
@@ -863,11 +1177,30 @@ fn split_line_ending(text: &str) -> (&str, &str) {
     }
 }
 
+/// How one render's lines are numbered, marked and styled.
+///
+/// The three HTML formatters differ only in what a highlighted line carries, so
+/// this is what they hand [`write_html_lines`] to make the walk itself shared.
+pub(crate) struct HtmlLines<'a> {
+    /// Root language used by Lumis-owned syntax-like decorations.
+    pub language: Language,
+    /// Which lines the caller asked to highlight.
+    pub selection: &'a LineSelection,
+    /// Whether each line opens with a gutter carrying its number.
+    pub numbered: bool,
+    /// Extra attributes carried by a regular line-number gutter.
+    pub line_number_attrs: Option<&'a str>,
+    /// Extra attributes carried by a highlighted line-number gutter.
+    pub highlighted_line_number_attrs: Option<&'a str>,
+    /// The class suffix a highlighted line's `<div>` carries.
+    pub highlighted_class: Option<&'a str>,
+    /// The inline style a highlighted line's `<div>` carries.
+    pub highlighted_style: Option<&'a str>,
+}
+
 /// Write a line-decorated stream as the `<div class="l-line">` blocks every
 /// built-in HTML formatter emits.
 ///
-/// The three of them differ only in the attributes a span and a highlighted line
-/// carry, so those are the two inputs; the walk itself is shared.
 /// [`write_line_events`] supplies the source terminator with each closing line,
 /// and this writer places it immediately before `</div>` without inventing one.
 ///
@@ -879,26 +1212,31 @@ pub(crate) fn write_html_lines<T>(
     output: &mut dyn Write,
     source: &str,
     events: &[HighlightEvent<'_, T>],
-    selection: &LineSelection,
+    lines: &HtmlLines<'_>,
     span_attrs: &dyn Fn(usize, &str) -> String,
-    highlighted_line: (Option<&str>, Option<&str>),
 ) -> io::Result<()> {
-    let plain_tag = LineTag::new(None, None);
-    let highlighted_tag = LineTag::new(highlighted_line.0, highlighted_line.1);
-    let composed = compose_line_decorations(source, events, selection);
+    let plain_tag = LineTag::new(None, None, lines.numbered, false, lines.line_number_attrs);
+    let highlighted_tag = LineTag::new(
+        lines.highlighted_class,
+        lines.highlighted_style,
+        lines.numbered,
+        true,
+        lines.highlighted_line_number_attrs,
+    );
+    let composed = compose_line_decorations(source, events, lines.selection);
     let mut attrs: std::collections::HashMap<(usize, &str), String> =
         std::collections::HashMap::new();
     let mut result = Ok(());
 
-    write_line_events(&composed, source, |fragment| {
+    write_line_events(&composed, source, lines.language.id_name(), |fragment| {
         if result.is_err() {
             return;
         }
         result = match fragment {
-            LineFragment::Open(Decoration::Line {
+            LineFragment::OpenLine {
                 number,
                 highlighted,
-            }) => {
+            } => {
                 let tag = if highlighted {
                     &highlighted_tag
                 } else {
@@ -1076,6 +1414,28 @@ mod tests {
         }
     }
 
+    fn html_lines<T>(
+        source: &str,
+        events: &[HighlightEvent<'_, T>],
+        selection: &LineSelection,
+        numbered: bool,
+        highlighted_class: Option<&str>,
+    ) -> String {
+        let mut output = Vec::new();
+        let lines = HtmlLines {
+            language: Language::PlainText,
+            selection,
+            numbered,
+            line_number_attrs: None,
+            highlighted_line_number_attrs: None,
+            highlighted_class,
+            highlighted_style: None,
+        };
+        write_html_lines(&mut output, source, events, &lines, &|_, _| String::new()).unwrap();
+
+        String::from_utf8(output).expect("the formatter writes UTF-8")
+    }
+
     #[test]
     fn test_escape_all_entities() {
         assert_eq!(escape("&<>\"'{}"), "&amp;&lt;&gt;&quot;&#39;{}");
@@ -1113,25 +1473,16 @@ mod tests {
     #[test]
     fn render_lines_from_events_and_the_html_pass_split_alike() {
         for source in ["", "one", "one\n", "one\ntwo", "one\r\ntwo", "one\rtwo"] {
-            let events = [HighlightEvent::<()>::Source {
+            let events: [HighlightEvent<'_, ()>; 1] = [HighlightEvent::Source {
                 start: 0,
                 end: source.len(),
             }];
 
             let lines = render_lines_from_events(source, &events, |_, _| String::new());
-            let mut html = Vec::new();
-            write_html_lines(
-                &mut html,
-                source,
-                &events,
-                &LineSelection::default(),
-                &|_, _| String::new(),
-                (None, None),
-            )
-            .unwrap();
+            let html = html_lines(source, &events, &LineSelection::default(), false, None);
 
             assert_str_eq!(
-                String::from_utf8(html).unwrap(),
+                html,
                 lines
                     .iter()
                     .enumerate()
@@ -1144,8 +1495,8 @@ mod tests {
     #[test]
     fn html_lines_write_source_endings_after_the_syntax_spans() {
         let source = "a\r\nb";
-        let events = [
-            HighlightEvent::<()>::Start {
+        let events: [HighlightEvent<'_, ()>; 3] = [
+            HighlightEvent::Start {
                 scope_index: 0,
                 language: "text".to_string(),
             },
@@ -1161,9 +1512,16 @@ mod tests {
             &mut html,
             source,
             &events,
-            &LineSelection::default(),
+            &HtmlLines {
+                language: Language::PlainText,
+                selection: &LineSelection::default(),
+                numbered: false,
+                line_number_attrs: None,
+                highlighted_line_number_attrs: None,
+                highlighted_class: None,
+                highlighted_style: None,
+            },
             &|_, _| "class=\"scope\"".to_string(),
-            (None, None),
         )
         .unwrap();
 
@@ -1171,6 +1529,75 @@ mod tests {
             String::from_utf8(html).unwrap(),
             "<div class=\"l-line\" data-line=\"1\"><span class=\"scope\">a</span>\r\n</div><div class=\"l-line\" data-line=\"2\"><span class=\"scope\">b</span></div>"
         );
+    }
+
+    /// The gutter carries the same number `data-line` does, because both read it
+    /// off the line's decoration.
+    #[test]
+    fn a_gutter_carries_the_number_data_line_does() {
+        let source = "one\ntwo";
+        let events = [HighlightEvent::<()>::Source {
+            start: 0,
+            end: source.len(),
+        }];
+        let selection = LineSelection::new(std::slice::from_ref(&(2..=2)), &[]);
+
+        let html = html_lines(source, &events, &selection, true, Some(" l-highlighted"));
+
+        assert_str_eq!(
+            html,
+            concat!(
+                r#"<div class="l-line" data-line="1">"#,
+                r#"<span class="l-line-number" aria-hidden="true">1</span>one"#,
+                "\n</div>",
+                r#"<div class="l-line l-highlighted" data-line="2">"#,
+                r#"<span class="l-line-number l-line-number-highlighted" aria-hidden="true">2</span>two"#,
+                // The last line is unterminated in the source, so it carries no
+                // terminator here either.
+                "</div>",
+            )
+        );
+    }
+
+    #[test]
+    fn gutters_carry_their_theme_attributes() {
+        let source = "one\ntwo";
+        let events = [HighlightEvent::<()>::Source {
+            start: 0,
+            end: source.len(),
+        }];
+        let selection = LineSelection::new(std::slice::from_ref(&(2..=2)), &[]);
+        let mut output = Vec::new();
+        let lines = HtmlLines {
+            language: Language::PlainText,
+            selection: &selection,
+            numbered: true,
+            line_number_attrs: Some(r#"style="color:#111111;""#),
+            highlighted_line_number_attrs: Some(r#"style="color:#eeeeee;""#),
+            highlighted_class: None,
+            highlighted_style: None,
+        };
+
+        write_html_lines(&mut output, source, &events, &lines, &|_, _| String::new()).unwrap();
+
+        let html = String::from_utf8(output).unwrap();
+        assert!(html.contains(
+            r#"<span class="l-line-number" style="color:#111111;" aria-hidden="true">1</span>"#
+        ));
+        assert!(html.contains(
+            r#"<span class="l-line-number l-line-number-highlighted" style="color:#eeeeee;" aria-hidden="true">2</span>"#
+        ));
+    }
+
+    /// Without the option nothing is added, which is what keeps every existing
+    /// fixture byte for byte what it was.
+    #[test]
+    fn no_gutter_without_line_numbers() {
+        let events = [HighlightEvent::<()>::Source { start: 0, end: 1 }];
+
+        let html = html_lines("a", &events, &LineSelection::default(), false, None);
+
+        assert_str_eq!(html, "<div class=\"l-line\" data-line=\"1\">a</div>");
     }
 
     #[test]
@@ -1270,6 +1697,98 @@ mod tests {
         assert_str_eq!(
             String::from_utf8(output).unwrap(),
             r#"<pre class="lumis" style="color: red&quot; onmouseover=&quot;alert(1); background-color: #000000;">"#
+        );
+    }
+
+    #[test]
+    fn pre_attributes_union_classes_append_styles_and_escape_values() {
+        let theme = crate::themes::get("dracula").unwrap();
+        let attrs = vec![
+            ("class".to_string(), "shorthand authored".into()),
+            ("style".to_string(), "outline: 1px solid red".into()),
+            ("id".to_string(), r#"sample" onmouseover="alert(1)"#.into()),
+        ];
+        let mut output = Vec::new();
+
+        write_pre_tag(&mut output, Some("shorthand"), Some(&theme), &attrs).unwrap();
+
+        assert_str_eq!(
+            String::from_utf8(output).unwrap(),
+            concat!(
+                r#"<pre class="lumis shorthand authored" "#,
+                r#"style="color: #f8f8f2; background-color: #282a36; outline: 1px solid red" "#,
+                r#"id="sample&quot; onmouseover=&quot;alert(1)">"#,
+            )
+        );
+    }
+
+    #[test]
+    fn code_attributes_union_classes_and_override_defaults() {
+        let attrs = vec![
+            ("class".to_string(), "copyable language-plaintext".into()),
+            ("translate".to_string(), "yes".into()),
+            ("tabindex".to_string(), "-1".into()),
+            ("data-copy".to_string(), "button".into()),
+        ];
+        let mut output = Vec::new();
+
+        write_code_tag(&mut output, Language::PlainText, &attrs).unwrap();
+
+        assert_str_eq!(
+            String::from_utf8(output).unwrap(),
+            concat!(
+                r#"<code class="language-plaintext copyable" "#,
+                r#"translate="yes" tabindex="-1" data-copy="button">"#,
+            )
+        );
+    }
+
+    #[test]
+    fn boolean_attributes_render_bare_and_false_removes_a_default() {
+        let attrs = vec![
+            ("inert".to_string(), true.into()),
+            ("translate".to_string(), false.into()),
+        ];
+        let mut output = Vec::new();
+
+        write_code_tag(&mut output, Language::PlainText, &attrs).unwrap();
+
+        assert_str_eq!(
+            String::from_utf8(output).unwrap(),
+            r#"<code class="language-plaintext" tabindex="0" inert>"#
+        );
+    }
+
+    #[test]
+    fn an_attribute_name_cannot_break_out_of_the_tag() {
+        for name in [
+            r#"x" onclick="alert(1)"#,
+            "x onclick=alert(1)",
+            "x=y",
+            "x/y",
+            "x>y",
+            "",
+        ] {
+            let attrs = vec![(name.to_string(), "y".into())];
+            let error = open_tag(&mut Vec::new(), "pre", &attrs).expect_err("the name is rejected");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        let valid = vec![("data-copy".to_string(), "y".into())];
+        assert!(open_tag(&mut Vec::new(), "pre", &valid).is_ok());
+    }
+
+    #[test]
+    fn a_pre_class_naming_a_theme_is_not_repeated() {
+        let mut themes = std::collections::HashMap::new();
+        themes.insert("dark".to_string(), crate::themes::get("dracula").unwrap());
+
+        let attrs = multi_themes_pre_attrs(Some("dark"), &themes, None, "--lumis", &[]);
+
+        assert_eq!(
+            attrs[0].1,
+            AttrValue::Value("lumis lumis-themes dark".to_string())
         );
     }
 

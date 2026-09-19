@@ -35,6 +35,20 @@ const guessCases = JSON.parse(
 
 const theme: Theme = tokyonightMoon;
 const draculaTheme: Theme = dracula;
+const lineNumberTheme: Theme = {
+  name: "line-numbers",
+  appearance: "dark",
+  highlights: {
+    normal: { fg: "#eeeeee", bg: "#111111" },
+    highlighted: { bg: "#222222" },
+    line_number: { fg: "#123456" },
+    "line_number.highlighted": { fg: "#abcdef", bold: true },
+    // Gutters are not language-specific. These deliberately conflicting
+    // custom scopes must not affect any formatter.
+    "line_number.plaintext": { fg: "#badbad" },
+    "line_number.highlighted.plaintext": { fg: "#badbad" },
+  },
+};
 
 let hl: Highlighter;
 
@@ -337,6 +351,87 @@ class User:
       htmlInline({ language: json, theme, preClass: "code-block" }),
     );
     expect(html).toContain('class="lumis code-block"');
+  });
+
+  it("merges preAttrs and codeAttrs in every HTML formatter", () => {
+    const attrs = {
+      preClass: "shorthand",
+      preAttrs: {
+        class: "shorthand authored",
+        style: "outline: 1px solid red",
+        id: 'pre"&',
+      },
+      codeAttrs: {
+        class: "copyable language-json",
+        translate: "yes",
+        tabindex: -1,
+        id: 'code"&',
+      },
+    };
+    const outputs = [
+      hl.highlight('{"a": 1}', htmlInline({ language: json, theme, ...attrs })),
+      hl.highlight('{"a": 1}', htmlLinked({ language: json, ...attrs })),
+      hl.highlight(
+        '{"a": 1}',
+        htmlMultiThemes({ language: json, themes: { dark: theme }, ...attrs }),
+      ),
+    ];
+
+    for (const html of outputs) {
+      const pre = html.match(/^<pre[^>]*>/)?.[0] ?? "";
+      const code = html.match(/<code[^>]*>/)?.[0] ?? "";
+
+      expect(pre).toContain('id="pre&quot;&amp;"');
+      expect(pre).toContain("outline: 1px solid red");
+      expect(pre.match(/\bshorthand\b/g)).toHaveLength(1);
+      expect(pre.match(/\bauthored\b/g)).toHaveLength(1);
+      expect(code).toContain('class="language-json copyable"');
+      expect(code).toContain('translate="yes"');
+      expect(code).toContain('tabindex="-1"');
+      expect(code).toContain('id="code&quot;&amp;"');
+    }
+  });
+
+  it("writes boolean attributes bare and drops a default set to false", () => {
+    const attrs = {
+      preAttrs: { inert: true },
+      codeAttrs: { translate: false },
+    };
+    const outputs = [
+      hl.highlight('{"a": 1}', htmlInline({ language: json, theme, ...attrs })),
+      hl.highlight('{"a": 1}', htmlLinked({ language: json, ...attrs })),
+      hl.highlight(
+        '{"a": 1}',
+        htmlMultiThemes({ language: json, themes: { dark: theme }, ...attrs }),
+      ),
+    ];
+
+    for (const html of outputs) {
+      const pre = html.match(/^<pre[^>]*>/)?.[0] ?? "";
+      const code = html.match(/<code[^>]*>/)?.[0] ?? "";
+
+      expect(pre).toContain(" inert>");
+      expect(code).not.toContain("translate");
+      expect(code).toContain('tabindex="0"');
+    }
+  });
+
+  it("refuses an attribute name that would break out of the tag", () => {
+    expect(() =>
+      hl.highlight(
+        '{"a": 1}',
+        htmlLinked({ language: json, preAttrs: { "x onclick=alert(1)": "y" } }),
+      ),
+    ).toThrow(/invalid HTML attribute name/);
+  });
+
+  it("does not repeat a preClass that names one of the themes", () => {
+    const html = hl.highlight(
+      '{"a": 1}',
+      htmlMultiThemes({ language: json, themes: { dark: theme }, preClass: "dark" }),
+    );
+
+    expect(html).toContain('class="lumis lumis-themes dark"');
   });
 
   it("accepts italic option", () => {
@@ -879,6 +974,142 @@ describe("highlightLines", () => {
     const plain = hl.highlight('{"a": 1}\n{"b": 2}', bbcodeScoped({ language: json }));
 
     expect(plain).not.toContain("[highlighted]");
+  });
+});
+
+// Whichever runtime formats — the native addon in Rust, or the Wasm runtime in
+// JavaScript — has to render the same gutter, so these run on both.
+describe("lineNumbers", () => {
+  const threeLines = '{"a": 1}\n{"b": 2}\n{"c": 3}';
+
+  it("htmlInline: each line carries a gutter element", () => {
+    const html = hl.highlight(
+      threeLines,
+      htmlInline({ language: json, theme: lineNumberTheme, lineNumbers: true }),
+    );
+
+    expect(html).toContain(
+      '<span class="l-line-number" style="color: #123456;" aria-hidden="true">1</span>',
+    );
+    expect(html).toContain(
+      '<span class="l-line-number" style="color: #123456;" aria-hidden="true">3</span>',
+    );
+  });
+
+  it("htmlInline: nothing is added without the option", () => {
+    const html = hl.highlight(threeLines, htmlInline({ language: json, theme }));
+
+    expect(html).not.toContain("l-line-number");
+  });
+
+  it("htmlLinked: the gutter carries the number data-line does", () => {
+    const html = hl.highlight(threeLines, htmlLinked({ language: json, lineNumbers: true }));
+
+    expect(html).toContain('data-line="1"><span class="l-line-number" aria-hidden="true">1</span>');
+    expect(html).toContain('data-line="3"><span class="l-line-number" aria-hidden="true">3</span>');
+  });
+
+  it("HTML: a highlighted gutter uses the CursorLineNr class and style", () => {
+    const inline = hl.highlight(
+      threeLines,
+      htmlInline({
+        language: json,
+        theme: lineNumberTheme,
+        lineNumbers: true,
+        highlightLines: { lines: [[2, 2]] },
+      }),
+    );
+    const linked = hl.highlight(
+      threeLines,
+      htmlLinked({
+        language: json,
+        lineNumbers: true,
+        highlightLines: { lines: [[2, 2]] },
+      }),
+    );
+
+    expect(inline).toContain(
+      '<span class="l-line-number l-line-number-highlighted" style="color: #abcdef; font-weight: bold;" aria-hidden="true">2</span>',
+    );
+    expect(linked).toContain(
+      '<span class="l-line-number l-line-number-highlighted" aria-hidden="true">2</span>',
+    );
+  });
+
+  it("htmlMultiThemes: each line carries a gutter element", () => {
+    const html = hl.highlight(
+      threeLines,
+      htmlMultiThemes({
+        language: json,
+        themes: { dark: lineNumberTheme },
+        defaultTheme: "dark",
+        lineNumbers: true,
+        highlightLines: { lines: [[2, 2]] },
+      }),
+    );
+
+    expect(html).toContain(
+      '<span class="l-line-number" style="color:#123456; --lumis-dark-font-style:normal; --lumis-dark-font-weight:normal; --lumis-dark-text-decoration:none;" aria-hidden="true">1</span>',
+    );
+    expect(html).toContain(
+      '<span class="l-line-number l-line-number-highlighted" style="color:#abcdef; font-weight:bold; --lumis-dark-font-style:normal; --lumis-dark-font-weight:bold; --lumis-dark-text-decoration:none;" aria-hidden="true">2</span>',
+    );
+  });
+
+  it("terminal: the gutter is padded to the widest number", () => {
+    const tenLines = Array.from({ length: 10 }, (_, index) => `{"a": ${index}}`).join("\n");
+    const output = hl.highlight(tenLines, terminal({ language: json, lineNumbers: true }));
+
+    expect(output).toContain(" 1 ");
+    expect(output).toContain("10 ");
+  });
+
+  it("terminal: regular and highlighted gutters use their Neovim styles", () => {
+    const output = hl.highlight(
+      '{"a": 1}\n{"b": 2}',
+      terminal({
+        language: json,
+        theme: lineNumberTheme,
+        lineNumbers: true,
+        highlightLines: { lines: [[2, 2]] },
+      }),
+    );
+
+    expect(output).toContain("38;2;18;52;86m1 ");
+    expect(output).toContain("38;2;171;205;239m");
+    expect(output).toContain("\u001B[1m2 ");
+  });
+
+  // Neovim draws the number column with `CursorLineNr` alone, so `CursorLine`
+  // does not reach it: a highlighted line's background starts at its text.
+  it("terminal: a highlighted line does not paint its gutter", () => {
+    const output = hl.highlight(
+      '{"a": 1}\n{"b": 2}',
+      terminal({
+        language: json,
+        lineNumbers: true,
+        highlightLines: { lines: [[1, 1]], background: "#ff0000" },
+      }),
+    );
+
+    expect(output.startsWith("1 ")).toBe(true);
+    expect(output).toContain("48;2;255;0;0");
+  });
+
+  it("terminal: nothing is added without the option", () => {
+    const output = hl.highlight(threeLines, terminal({ language: json }));
+
+    expect(output.startsWith("1 ")).toBe(false);
+  });
+
+  // A terminal writes nothing at all for the line a trailing newline opens, so
+  // numbering it would leave a bare number after the output.
+  it("terminal: the line a trailing newline opens carries no number", () => {
+    const output = hl.highlight('{"a": 1}\n', terminal({ language: json, lineNumbers: true }));
+
+    expect(output.startsWith("1 ")).toBe(true);
+    expect(output.endsWith("\n")).toBe(true);
+    expect(output).not.toContain("2 ");
   });
 });
 

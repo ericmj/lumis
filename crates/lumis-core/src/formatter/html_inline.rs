@@ -55,11 +55,14 @@ pub struct HtmlInline {
     language: Language,
     theme: Option<Theme>,
     pre_class: Option<String>,
+    pre_attrs: crate::formatter::html::HtmlAttrs,
+    code_attrs: crate::formatter::html::HtmlAttrs,
     italic: bool,
     include_highlights: bool,
     highlight_lines: Option<HighlightLines>,
     #[builder(setter(skip), default)]
     stepped_highlight_lines: Vec<SteppedLineRange>,
+    line_numbers: bool,
     header: Option<HtmlElement>,
 }
 
@@ -88,16 +91,20 @@ impl HtmlInline {
         italic: bool,
         include_highlights: bool,
         highlight_lines: Option<HighlightLines>,
+        line_numbers: bool,
         header: Option<HtmlElement>,
     ) -> Self {
         Self {
             language,
             theme,
             pre_class,
+            pre_attrs: Vec::new(),
+            code_attrs: Vec::new(),
             italic,
             include_highlights,
             highlight_lines,
             stepped_highlight_lines: Vec::new(),
+            line_numbers,
             header,
         }
     }
@@ -161,6 +168,22 @@ impl HtmlInline {
             self.include_highlights,
         )
     }
+
+    fn line_number_attrs(&self, highlighted: bool) -> String {
+        let scope = if highlighted {
+            "line_number.highlighted"
+        } else {
+            "line_number"
+        };
+
+        crate::formatter::html::span_inline_attrs(
+            None,
+            scope,
+            self.theme.as_ref(),
+            self.italic,
+            false,
+        )
+    }
 }
 
 impl Default for HtmlInline {
@@ -169,10 +192,13 @@ impl Default for HtmlInline {
             language: Language::PlainText,
             theme: None,
             pre_class: None,
+            pre_attrs: Vec::new(),
+            code_attrs: Vec::new(),
             italic: false,
             include_highlights: false,
             highlight_lines: None,
             stepped_highlight_lines: Vec::new(),
+            line_numbers: false,
             header: None,
         }
     }
@@ -195,21 +221,31 @@ impl<T> Formatter<T> for HtmlInline {
             write!(buffer, "{}", header.open_tag)?;
         }
 
-        crate::formatter::html::open_pre_tag(
+        crate::formatter::html::write_pre_tag(
             &mut buffer,
             self.pre_class.as_deref(),
             self.theme.as_ref(),
+            &self.pre_attrs,
         )?;
-        crate::formatter::html::open_code_tag(&mut buffer, &self.language)?;
+        crate::formatter::html::write_code_tag(&mut buffer, self.language, &self.code_attrs)?;
 
         let (class_suffix, style) = self.get_line_attrs(true);
+        let line_number_attrs = self.line_numbers.then(|| self.line_number_attrs(false));
+        let highlighted_line_number_attrs = self.line_numbers.then(|| self.line_number_attrs(true));
         crate::formatter::html::write_html_lines(
             &mut buffer,
             source,
             events,
-            &self.line_selection(),
+            &crate::formatter::html::HtmlLines {
+                language: self.language,
+                selection: &self.line_selection(),
+                numbered: self.line_numbers,
+                line_number_attrs: line_number_attrs.as_deref(),
+                highlighted_line_number_attrs: highlighted_line_number_attrs.as_deref(),
+                highlighted_class: class_suffix.as_deref(),
+                highlighted_style: style.as_deref(),
+            },
             &|scope_index, language| self.span_attrs_from_index(scope_index, language),
-            (class_suffix.as_deref(), style.as_deref()),
         )?;
 
         crate::formatter::html::closing_tags(&mut buffer)?;

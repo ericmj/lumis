@@ -3,18 +3,21 @@ import type {
   HighlightStyle,
   HighlightSpan,
   HighlightEvent,
+  HtmlAttrs,
   HtmlElement,
   LineSpec,
   LanguageRef,
   SyntaxHighlightEvent,
   Theme,
 } from "../types.js";
-import { LineSelection, composeLineDecorations } from "../decorations.js";
+import { LineSelection, composeLineDecorations, rainbowBracketScope } from "../decorations.js";
 import { HIGHLIGHT_NAMES } from "../highlights.js";
 import { sanitizeThemeName } from "../themes.js";
+import { mergeAttrs, mergeClasses } from "../core/attr-merge.js";
 
 // Rust exposes this from `lumis::formatters::html`, so the helper modules line up.
 export { sanitizeThemeName } from "../themes.js";
+export type { HtmlAttrs } from "../types.js";
 
 const _encoder = new TextEncoder();
 const _decoder = new TextDecoder();
@@ -42,9 +45,6 @@ export function decodeSourceSlice(
 function isUtf8Continuation(byte: number | undefined): boolean {
   return byte !== undefined && (byte & 0xc0) === 0x80;
 }
-
-/** HTML attribute map. Values of `undefined`, `null`, or `false` are omitted. */
-export type HtmlAttrs = Record<string, string | number | boolean | undefined | null>;
 
 function languageId(language: LanguageRef): string {
   return typeof language === "string" ? language : language.id;
@@ -137,8 +137,9 @@ const RAINBOW_BRACKET_FALLBACKS: Record<string, HighlightStyle> = {
 export function getScopedThemeStyle(
   theme: Theme | undefined,
   scope: string,
-  language: LanguageRef,
+  language: LanguageRef | undefined,
 ): HighlightStyle | undefined {
+  if (language === undefined) return getThemeStyle(theme, scope);
   return getThemeStyle(theme, `${scope}.${languageId(language)}`) ?? getThemeStyle(theme, scope);
 }
 
@@ -274,11 +275,31 @@ function classList(...classes: Array<string | undefined | false | null>): string
   return value.length > 0 ? value.join(" ") : undefined;
 }
 
+/**
+ * Whether a name is one HTML can carry on an attribute.
+ *
+ * A name with a space, a quote, `=`, `/` or `>` in it cannot be escaped into
+ * safety: a space alone splits it into two attributes, and the second one can
+ * be an event handler.
+ *
+ * ```ts
+ * isValidAttrName('data-copy')          // true
+ * isValidAttrName('x onclick=alert(1)') // false
+ * ```
+ */
+export function isValidAttrName(name: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return name.length > 0 && !/[\s"'>/=\u0000-\u001F\u007F-\u009F]/.test(name);
+}
+
 function renderAttrs(attrs: HtmlAttrs): string {
   const parts: string[] = [];
 
   for (const [name, value] of Object.entries(attrs)) {
     if (value == null || value === false) continue;
+    if (!isValidAttrName(name)) {
+      throw new TypeError(`invalid HTML attribute name: ${JSON.stringify(name)}`);
+    }
     if (value === true) {
       parts.push(name);
       continue;
@@ -328,15 +349,21 @@ export function attrsToString(attrs: HtmlAttrs): string {
 }
 
 /**
- * Build an opening HTML tag with attributes.
+ * Build an opening HTML tag from attributes, escaping every value.
+ *
+ * This is what {@link preAttrs}, {@link multiThemesPreAttrs} and
+ * {@link codeAttrs} are built for: merge their result with your own attributes,
+ * then render the whole thing here rather than assembling the string and
+ * remembering to escape it.
  *
  * ```ts
  * openTag('span', { class: 'keyword', style: 'color: red' })
  * // '<span class="keyword" style="color: red">'
+ * openTag('pre', { class: 'lumis', hidden: true })
+ * // '<pre class="lumis" hidden>'
  * ```
  *
- * @deprecated Use {@link openPreTag}, {@link openCodeTag} or
- * {@link openSpanTag}. Removed in the next major.
+ * Throws for a name HTML cannot carry, per {@link isValidAttrName}.
  */
 export function openTag(name: string, attrs: HtmlAttrs = {}): string {
   return tag(name, attrs);
@@ -381,6 +408,22 @@ function openSpan(attrs: string): string {
 export interface OpenPreTagOptions {
   preClass?: string;
   theme?: Theme;
+  /** Additional attributes to merge after Lumis's generated values. */
+  attrs?: HtmlAttrs;
+}
+
+/** Build the attributes used by inline and linked `<pre>` tags. */
+export function preAttrs(options: OpenPreTagOptions = {}): HtmlAttrs {
+  const className = options.preClass ? `lumis ${options.preClass}` : "lumis";
+  const style = styleToCss(getThemeStyle(options.theme, "normal"));
+
+  return mergeAttrs(
+    {
+      class: className,
+      style: style.length > 0 ? style : undefined,
+    },
+    options.attrs,
+  );
 }
 
 /**
@@ -392,12 +435,7 @@ export interface OpenPreTagOptions {
  * ```
  */
 export function openPreTag(options: OpenPreTagOptions = {}): string {
-  const className = options.preClass ? `lumis ${options.preClass}` : "lumis";
-  const style = styleToCss(getThemeStyle(options.theme, "normal"));
-  return tag("pre", {
-    class: className,
-    style: style.length > 0 ? style : undefined,
-  });
+  return tag("pre", preAttrs(options));
 }
 
 /**
@@ -409,6 +447,21 @@ export interface OpenMultiThemesPreTagOptions {
   defaultTheme?: string;
   /** Defaults to `"--lumis"`. */
   cssVariablePrefix?: string;
+  /** Additional attributes to merge after Lumis's generated values. */
+  attrs?: HtmlAttrs;
+}
+
+/** Build the attributes used by a multi-theme `<pre>` tag. */
+export function multiThemesPreAttrs(options: OpenMultiThemesPreTagOptions): HtmlAttrs {
+  const classes =
+    classList("lumis", "lumis-themes", options.preClass, ...sortedThemeNames(options.themes)) ??
+    "lumis lumis-themes";
+
+  return mergeAttrs(
+    // A `preClass` naming one of the themes would otherwise appear twice.
+    { class: mergeClasses(classes, ""), style: multiThemesPreStyle(options) },
+    options.attrs,
+  );
 }
 
 /**
@@ -425,11 +478,20 @@ export interface OpenMultiThemesPreTagOptions {
  * ```
  */
 export function openMultiThemesPreTag(options: OpenMultiThemesPreTagOptions): string {
-  const classes =
-    classList("lumis", "lumis-themes", options.preClass, ...sortedThemeNames(options.themes)) ??
-    "lumis lumis-themes";
+  return tag("pre", multiThemesPreAttrs(options));
+}
 
-  return tag("pre", { class: classes, style: multiThemesPreStyle(options) });
+/** Build the attributes used by every HTML formatter's `<code>` tag. */
+export function codeAttrs(language: LanguageRef | undefined, attrs: HtmlAttrs = {}): HtmlAttrs {
+  const id = language ? languageId(language) : "plaintext";
+  return mergeAttrs(
+    {
+      class: `language-${id}`,
+      translate: "no",
+      tabindex: 0,
+    },
+    attrs,
+  );
 }
 
 /**
@@ -439,13 +501,8 @@ export function openMultiThemesPreTag(options: OpenMultiThemesPreTagOptions): st
  * openCodeTag(javascript)  // '<code class="language-javascript" translate="no" tabindex="0">'
  * ```
  */
-export function openCodeTag(language: LanguageRef | undefined): string {
-  const id = language ? languageId(language) : "plaintext";
-  return tag("code", {
-    class: `language-${id}`,
-    translate: "no",
-    tabindex: 0,
-  });
+export function openCodeTag(language: LanguageRef | undefined, attrs: HtmlAttrs = {}): string {
+  return tag("code", codeAttrs(language, attrs));
 }
 
 /**
@@ -615,7 +672,8 @@ export function spanLinked(text: string, scope: string): string {
  * ```
  */
 export interface SpanMultiThemesOptions {
-  language: LanguageRef;
+  /** Omit for scopes, such as line-number gutters, that are not language-specific. */
+  language?: LanguageRef;
   scope: string;
   themes: Record<string, Theme | undefined>;
   defaultTheme?: string;
@@ -765,7 +823,7 @@ function pushThemeCssVars(
   prefix: string,
   themeName: string,
   scope: string,
-  language: LanguageRef,
+  language: LanguageRef | undefined,
   theme: Theme | undefined,
 ): void {
   const style = getScopedThemeStyle(theme, scope, language);
@@ -813,7 +871,7 @@ function pushThemeCssVarsForAll(
   prefix: string,
   themes: Record<string, Theme | undefined>,
   scope: string,
-  language: LanguageRef,
+  language: LanguageRef | undefined,
   excludeTheme?: string,
 ): void {
   for (const themeName of sortedThemeNames(themes)) {
@@ -968,6 +1026,30 @@ export function wrapLine(
 }
 
 /**
+ * The class the gutter element carries, for a stylesheet to hang a column off.
+ *
+ * The number is written out rather than left to `content: attr(data-line)`
+ * because a formatter that cannot reach a stylesheet — `terminal` — has to show
+ * the same thing, and because generated content is not in the document a reader
+ * can inspect. It is `aria-hidden`, so a screen reader is not read a number
+ * before every line.
+ *
+ * Private for the same reason `l-line` is: it is a class the built-in formatters
+ * write, not a helper a custom one is built from.
+ */
+const LINE_NUMBER_CLASS = "l-line-number";
+const HIGHLIGHTED_LINE_NUMBER_CLASS = "l-line-number-highlighted";
+
+function lineNumberGutter(lineNumber: number, highlighted: boolean, attrs: HtmlAttrs): string {
+  const open = openSpanTag({
+    class: classList(LINE_NUMBER_CLASS, highlighted && HIGHLIGHTED_LINE_NUMBER_CLASS),
+    ...attrs,
+    "aria-hidden": "true",
+  });
+  return `${open}${lineNumber}</span>`;
+}
+
+/**
  * Check if a line number is in a list of highlighted lines.
  *
  * ```ts
@@ -1042,7 +1124,9 @@ interface LineRenderState {
   line: string;
   /** The exact source terminator held until every syntax span has closed. */
   ending: string;
-  decoration: Decoration;
+  decoration: Extract<Decoration, { type: "line" }>;
+  /** Lumis-owned layers, used to distinguish line ends from rainbow ends. */
+  decorations: Decoration[];
   /** The document's language: the innermost scope's, once one has been open. */
   language: string;
   /** The close tag of each open scope, empty when the formatter omitted it. */
@@ -1061,7 +1145,7 @@ interface LineRenderContext {
   formatText: (text: string) => string;
   openSpan: (span: HighlightSpan, style: HighlightStyle | undefined) => string;
   closeSpan: (span: HighlightSpan, style: HighlightStyle | undefined) => string;
-  onLine: (content: string, decoration: Decoration) => void;
+  onLine: (content: string, decoration: Extract<Decoration, { type: "line" }>) => void;
 }
 
 function openSpanEvent(
@@ -1101,6 +1185,33 @@ function sourceEvent(
   state.line += context.formatText(ending ? text.slice(0, -ending.length) : text);
 }
 
+function startLineDecoration(
+  state: LineRenderState,
+  context: LineRenderContext,
+  decoration: Decoration,
+): void {
+  state.decorations.push(decoration);
+  if (decoration.type === "line") {
+    state.decoration = decoration;
+    state.line = "";
+    state.ending = "";
+    return;
+  }
+  openSpanEvent(state, context, {
+    scope: rainbowBracketScope(decoration.depth),
+    language: state.language,
+  });
+}
+
+function endLineDecoration(state: LineRenderState, context: LineRenderContext): void {
+  const decoration = state.decorations.pop();
+  if (decoration?.type === "line") {
+    context.onLine(`${state.line}${state.ending}`, state.decoration);
+  } else if (decoration?.type === "rainbowBracket") {
+    state.line += state.openScopes.pop()?.close ?? "";
+  }
+}
+
 function applyLineEvent(
   state: LineRenderState,
   context: LineRenderContext,
@@ -1108,12 +1219,10 @@ function applyLineEvent(
 ): void {
   switch (event.type) {
     case "decorationStart":
-      state.decoration = event.decoration;
-      state.line = "";
-      state.ending = "";
+      startLineDecoration(state, context, event.decoration);
       break;
     case "decorationEnd":
-      context.onLine(`${state.line}${state.ending}`, state.decoration);
+      endLineDecoration(state, context);
       break;
     case "start":
       openSpanEvent(state, context, event);
@@ -1144,7 +1253,7 @@ function renderDecoratedLines(
   theme: Theme | undefined,
   language: string,
   options: LineRenderOptions,
-  onLine: (content: string, decoration: Decoration) => void,
+  onLine: (content: string, decoration: Extract<Decoration, { type: "line" }>) => void,
 ): string {
   const context: LineRenderContext = {
     sourceBytes,
@@ -1158,6 +1267,7 @@ function renderDecoratedLines(
     line: "",
     ending: "",
     decoration: { type: "line", number: 1, highlighted: false },
+    decorations: [],
     language,
     openScopes: [],
     tags: new Map(),
@@ -1180,11 +1290,12 @@ export function formatHighlightIterLines(
 ): { lines: string[]; language: string } {
   const sourceBytes = encodeSource(source);
   const lines: string[] = [];
+  const inferredLanguage = events.find((event) => event.type === "start");
   const language = renderDecoratedLines(
     sourceBytes,
     composeLineDecorations(sourceBytes, events, new LineSelection(undefined)),
     theme,
-    languageRef ? languageId(languageRef) : "plaintext",
+    languageRef ? languageId(languageRef) : (inferredLanguage?.language ?? "plaintext"),
     options,
     (content) => lines.push(content),
   );
@@ -1211,11 +1322,14 @@ export function formatHtmlLines(
     language: LanguageRef | undefined;
     theme: Theme | undefined;
     lines: readonly LineSpec[] | undefined;
+    lineNumbers: boolean | undefined;
+    lineNumberAttrs: { regular: HtmlAttrs; highlighted: HtmlAttrs };
     highlightedAttrs: { className?: string; style?: string };
     openSpan: (span: HighlightSpan, style: HighlightStyle | undefined) => string;
   },
 ): string {
   const sourceBytes = encodeSource(source);
+  const numbered = formatter.lineNumbers === true;
   const composed = composeLineDecorations(sourceBytes, events, new LineSelection(formatter.lines));
   const parts: string[] = [];
 
@@ -1229,7 +1343,15 @@ export function formatHtmlLines(
       parts.push(
         wrapLine(
           decoration.number,
-          content,
+          numbered
+            ? `${lineNumberGutter(
+                decoration.number,
+                decoration.highlighted,
+                decoration.highlighted
+                  ? formatter.lineNumberAttrs.highlighted
+                  : formatter.lineNumberAttrs.regular,
+              )}${content}`
+            : content,
           decoration.highlighted ? formatter.highlightedAttrs : {},
         ),
       );

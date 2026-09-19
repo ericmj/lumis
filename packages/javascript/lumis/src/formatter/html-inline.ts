@@ -48,6 +48,15 @@ function highlightLineStyle(formatter: HtmlInlineFormatter): string | undefined 
   return styleToCss(style, { italic: formatter.italic }) || undefined;
 }
 
+function lineNumberAttrs(
+  formatter: HtmlInlineFormatter,
+  highlighted: boolean,
+): Record<string, string> {
+  const scope = highlighted ? "line_number.highlighted" : "line_number";
+  const style = styleToCss(getThemeStyle(formatter.theme, scope), { italic: formatter.italic });
+  return style === "" ? {} : { style };
+}
+
 export function formatHtmlInline(
   source: string,
   events: readonly HighlightEvent[],
@@ -57,6 +66,11 @@ export function formatHtmlInline(
     language: formatter.language,
     theme: formatter.theme,
     lines: formatter.highlightLines?.lines,
+    lineNumbers: formatter.lineNumbers,
+    lineNumberAttrs: {
+      regular: lineNumberAttrs(formatter, false),
+      highlighted: lineNumberAttrs(formatter, true),
+    },
     highlightedAttrs: {
       className: formatter.highlightLines?.class,
       style: highlightLineStyle(formatter),
@@ -64,8 +78,12 @@ export function formatHtmlInline(
     openSpan: (span) => openSpanTag(spanAttrs(span, formatter)),
   });
 
-  const pre = openPreTag({ preClass: formatter.preClass, theme: formatter.theme });
-  const code = openCodeTag(formatter.language);
+  const pre = openPreTag({
+    preClass: formatter.preClass,
+    theme: formatter.theme,
+    attrs: formatter.preAttrs,
+  });
+  const code = openCodeTag(formatter.language, formatter.codeAttrs);
 
   return wrapWithHeader(`${pre}${code}${body}${closingTags()}`, formatter.header);
 }

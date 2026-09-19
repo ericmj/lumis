@@ -47,6 +47,7 @@ const sidebars: SidebarsConfig = {
       items: [
         "integrations/react",
         "integrations/rehype-lumis",
+        "integrations/vite",
         "integrations/markdown-it",
         "integrations/vitepress",
         "integrations/mdx",
@@ -85,6 +86,7 @@ const sidebars: SidebarsConfig = {
         "recipes/light-dark",
         "recipes/file-title-copy",
         "usage/line-highlighting",
+        "usage/line-numbers",
       ],
     },
     {

@@ -146,6 +146,8 @@ Lumis.highlight!(code,
     language: "elixir",
     theme: "github_light",
     pre_class: "my-code",
+    pre_attrs: [id: "example"],
+    code_attrs: [title: "Highlighted Elixir"],
     italic: true,
     include_highlights: false
   ]}
@@ -155,9 +157,12 @@ Lumis.highlight!(code,
 Available options for `:html_inline`:
 - `:theme` - Theme name (string) or `Lumis.Theme` struct
 - `:pre_class` - CSS class to add to the `<pre>` tag
+- `:pre_attrs` - Attributes merged into the `<pre>` tag; `true` writes the bare boolean form, `false` drops a default
+- `:code_attrs` - Attributes merged into the `<code>` tag; `true` writes the bare boolean form, `false` drops a default
 - `:italic` - Enable italic styles (default: `false`)
 - `:include_highlights` - Add `data-highlight` attributes for debugging (default: `false`)
 - `:highlight_lines` - Highlight specific lines (see Line Highlighting section)
+- `:line_numbers` - Open each line with a line number gutter (see Line Numbers section)
 - `:header` - Wrap with custom HTML tags (see Custom Wrappers section)
 
 ### HTML Linked
@@ -190,7 +195,10 @@ Then in your template:
 
 Available options for `:html_linked`:
 - `:pre_class` - CSS class to add to the `<pre>` tag
+- `:pre_attrs` - Attributes merged into the `<pre>` tag; `true` writes the bare boolean form, `false` drops a default
+- `:code_attrs` - Attributes merged into the `<code>` tag; `true` writes the bare boolean form, `false` drops a default
 - `:highlight_lines` - Highlight specific lines with CSS class
+- `:line_numbers` - Open each line with a line number gutter (see Line Numbers section)
 - `:header` - Wrap with custom HTML tags
 
 #### Building scoped CSS
@@ -296,9 +304,12 @@ Available options for `:html_multi_themes`:
 - `:default_theme` - Controls inline color rendering: theme identifier, `"light-dark()"`, or `nil` (default: `nil`)
 - `:css_variable_prefix` - Custom CSS variable prefix (default: `"--lumis"`)
 - `:pre_class` - CSS class to add to the `<pre>` tag
+- `:pre_attrs` - Attributes merged into the `<pre>` tag; `true` writes the bare boolean form, `false` drops a default
+- `:code_attrs` - Attributes merged into the `<code>` tag; `true` writes the bare boolean form, `false` drops a default
 - `:italic` - Enable italic styles (default: `false`)
 - `:include_highlights` - Add `data-highlight` attributes for debugging (default: `false`)
 - `:highlight_lines` - Highlight specific lines (same options as `:html_inline`)
+- `:line_numbers` - Open each line with a line number gutter (see Line Numbers section)
 - `:header` - Wrap with custom HTML tags (same options as other formatters)
 
 ### Terminal
@@ -318,6 +329,10 @@ Lumis.highlight!(code,
 
 Available options for `:terminal`:
 - `:theme` - Theme name (string) or `Lumis.Theme` struct
+- `:background` - Fallback background: `:theme`, a hex colour, or `nil` to inherit the terminal's
+- `:width` - Pad each line out to this width, so a background reaches the edge
+- `:highlight_lines` - Paint specific lines with a background colour
+- `:line_numbers` - Prefix each line with its number (see Line Numbers section)
 
 ### BBCode Scoped
 
@@ -330,7 +345,7 @@ Lumis.highlight!(code,
 ```
 
 Available options for `:bbcode_scoped`:
-- none
+- `:highlight_lines` - Wrap specific lines in `[highlighted]...[/highlighted]`
 
 ## Themes
 
@@ -443,6 +458,21 @@ Lumis.highlight!(code,
   }
 )
 ```
+
+### Line Numbers
+
+`:line_numbers` numbers the lines a formatter renders. The three HTML formatters
+and `:terminal` take it; `:bbcode_scoped` has nothing to render a number into.
+
+```elixir
+Lumis.highlight!(code, formatter: {:html_inline, language: "elixir", line_numbers: true})
+```
+
+HTML opens each line with `<span class="l-line-number" aria-hidden="true">N</span>`,
+which uses the theme's `LineNr` style and needs a layout rule to become a column.
+A highlighted gutter also has `l-line-number-highlighted` and uses `CursorLineNr`,
+falling back to `LineNr`. The terminal uses the same styles and writes the number
+right-aligned to the widest one.
 
 ### Custom HTML Wrappers
 
@@ -843,6 +873,8 @@ opts = Lumis.default_options()
       language: "elixir" | ".ex" | "app.ex" | nil,
       theme: "onedark" | %Lumis.Theme{},
       pre_class: "my-class",
+      pre_attrs: [id: "example"],
+      code_attrs: [title: "Highlighted code"],
       italic: false,
       include_highlights: false,
       highlight_lines: %{
@@ -850,6 +882,7 @@ opts = Lumis.default_options()
         style: :theme | "custom-css" | nil,
         class: "custom-class"
       },
+      line_numbers: false,
       header: %{
         open_tag: "<div>",
         close_tag: "</div>"
@@ -859,10 +892,13 @@ opts = Lumis.default_options()
     {:html_linked, [
       language: "elixir" | ".ex" | "app.ex" | nil,
       pre_class: "my-class",
+      pre_attrs: [id: "example"],
+      code_attrs: [title: "Highlighted code"],
       highlight_lines: %{
         lines: [1, 2..5],
         class: "l-highlighted"
       },
+      line_numbers: false,
       header: %{
         open_tag: "<div>",
         close_tag: "</div>"
@@ -871,7 +907,14 @@ opts = Lumis.default_options()
     :terminal |
     {:terminal, [
       language: "elixir" | ".ex" | "app.ex" | nil,
-      theme: "onedark" | %Lumis.Theme{}
+      theme: "onedark" | %Lumis.Theme{},
+      background: :theme | "#282a36" | nil,
+      width: 120 | nil,
+      highlight_lines: %{
+        lines: [1, 2..5],
+        background: "#3a3a3a" | nil
+      },
+      line_numbers: false
     ]} |
     :html_multi_themes |
     {:html_multi_themes, [
@@ -880,6 +923,8 @@ opts = Lumis.default_options()
       default_theme: "light" | "light-dark()" | nil,
       css_variable_prefix: "--custom",
       pre_class: "my-class",
+      pre_attrs: [id: "example"],
+      code_attrs: [title: "Highlighted code"],
       italic: false,
       include_highlights: false,
       highlight_lines: %{
@@ -887,6 +932,7 @@ opts = Lumis.default_options()
         style: :theme | "custom-css" | nil,
         class: "custom-class"
       },
+      line_numbers: false,
       header: %{
         open_tag: "<div>",
         close_tag: "</div>"
@@ -894,7 +940,8 @@ opts = Lumis.default_options()
     ]} |
     :bbcode_scoped |
     {:bbcode_scoped, [
-      language: "elixir" | ".ex" | "app.ex" | nil
+      language: "elixir" | ".ex" | "app.ex" | nil,
+      highlight_lines: %{lines: [1, 2..5]}
     ]}
 ]
 ```

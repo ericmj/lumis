@@ -1,5 +1,5 @@
 /* onelight
- * revision: f5fddfd5122fe00421e199151ae4fe8571a02898
+ * revision: 24c806cb85c1f84d9faaff457cf7aa87c685a070
  */
 .lumis {
   color: #6a6a6a;
@@ -188,6 +188,14 @@
 }
 .l-label-ruby {
   color: #e05661;
+}
+.l-line-number:not(.l-line-number-highlighted) {
+  color: #cccccc;
+  background-color: #fafafa;
+}
+.l-line-number-highlighted {
+  color: #9a77cf;
+  background-color: #fafafa;
 }
 .l-markup {
   color: #118dc3;

@@ -20,6 +20,8 @@ pub(crate) const OPTSET_HTML: &str =
     "Options for --formatter html-inline, html-linked, html-multi-themes";
 pub(crate) const OPTSET_STYLED: &str = "Options for --formatter html-inline, html-multi-themes";
 pub(crate) const OPTSET_MULTI_THEME: &str = "Options for --formatter html-multi-themes";
+pub(crate) const OPTSET_LINE_NUMBERS: &str =
+    "Options for --formatter html-inline, html-linked, html-multi-themes, terminal";
 
 /// A set of flags that the same formatters accept.
 pub(crate) struct OptionGroup {
@@ -76,11 +78,15 @@ pub(crate) const OPTION_GROUPS: &[OptionGroup] = &[
         label: "HTML options",
         flags: &[
             "--pre-class",
+            "--pre-attr",
+            "--no-pre-attr",
+            "--code-attr",
+            "--no-code-attr",
             "--header-open",
             "--header-close",
             "--highlight-lines-class",
         ],
-        manifest_options: &["pre_class", "header"],
+        manifest_options: &["pre_class", "pre_attrs", "code_attrs", "header"],
     },
     OptionGroup {
         label: "inline-style options",
@@ -90,6 +96,11 @@ pub(crate) const OPTION_GROUPS: &[OptionGroup] = &[
             "--highlight-lines-style",
         ],
         manifest_options: &["italic", "include_highlights"],
+    },
+    OptionGroup {
+        label: "line-number options",
+        flags: &["--line-numbers"],
+        manifest_options: &["line_numbers"],
     },
     OptionGroup {
         label: "multi-theme options",

@@ -41,9 +41,12 @@ pub struct HtmlLinked {
     #[builder(setter(custom))]
     language: Language,
     pre_class: Option<String>,
+    pre_attrs: crate::formatter::html::HtmlAttrs,
+    code_attrs: crate::formatter::html::HtmlAttrs,
     highlight_lines: Option<HighlightLines>,
     #[builder(setter(skip), default)]
     stepped_highlight_lines: Vec<SteppedLineRange>,
+    line_numbers: bool,
     header: Option<HtmlElement>,
 }
 
@@ -68,13 +71,17 @@ impl HtmlLinked {
         language: Language,
         pre_class: Option<String>,
         highlight_lines: Option<HighlightLines>,
+        line_numbers: bool,
         header: Option<HtmlElement>,
     ) -> Self {
         Self {
             language,
             pre_class,
+            pre_attrs: Vec::new(),
+            code_attrs: Vec::new(),
             highlight_lines,
             stepped_highlight_lines: Vec::new(),
+            line_numbers,
             header,
         }
     }
@@ -118,8 +125,11 @@ impl Default for HtmlLinked {
         Self {
             language: Language::PlainText,
             pre_class: None,
+            pre_attrs: Vec::new(),
+            code_attrs: Vec::new(),
             highlight_lines: None,
             stepped_highlight_lines: Vec::new(),
+            line_numbers: false,
             header: None,
         }
     }
@@ -142,17 +152,29 @@ impl<T> Formatter<T> for HtmlLinked {
             write!(buffer, "{}", header.open_tag)?;
         }
 
-        crate::formatter::html::open_pre_tag(&mut buffer, self.pre_class.as_deref(), None)?;
-        crate::formatter::html::open_code_tag(&mut buffer, &self.language)?;
+        crate::formatter::html::write_pre_tag(
+            &mut buffer,
+            self.pre_class.as_deref(),
+            None,
+            &self.pre_attrs,
+        )?;
+        crate::formatter::html::write_code_tag(&mut buffer, self.language, &self.code_attrs)?;
 
         let class_suffix = self.get_line_class_suffix(true);
         crate::formatter::html::write_html_lines(
             &mut buffer,
             source,
             events,
-            &self.line_selection(),
+            &crate::formatter::html::HtmlLines {
+                language: self.language,
+                selection: &self.line_selection(),
+                numbered: self.line_numbers,
+                line_number_attrs: None,
+                highlighted_line_number_attrs: None,
+                highlighted_class: class_suffix.as_deref(),
+                highlighted_style: None,
+            },
             &|scope_index, _language| Self::span_attrs_from_index(scope_index),
-            (class_suffix.as_deref(), None),
         )?;
 
         crate::formatter::html::closing_tags(&mut buffer)?;

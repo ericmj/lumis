@@ -44,16 +44,22 @@ const htmlInline: Required<HtmlInlineOptions> = {
   language: "rust",
   theme,
   preClass: "code",
+  preAttrs: { id: "sample" },
+  codeAttrs: { "data-copy": "sample" },
   italic: true,
   includeHighlights: true,
   highlightLines: { lines: [1], style: "theme", class: "active" },
+  lineNumbers: true,
   header: { openTag: "<figure>", closeTag: "</figure>" },
 };
 
 const htmlLinked: Required<HtmlLinkedOptions> = {
   language: "rust",
   preClass: "code",
+  preAttrs: { id: "sample" },
+  codeAttrs: { "data-copy": "sample" },
   highlightLines: { lines: [1], class: "active" },
+  lineNumbers: true,
   header: { openTag: "<figure>", closeTag: "</figure>" },
 };
 
@@ -63,9 +69,12 @@ const htmlMultiThemes: Required<HtmlMultiThemesOptions> = {
   defaultTheme: "light",
   cssVariablePrefix: "--lumis",
   preClass: "code",
+  preAttrs: { id: "sample" },
+  codeAttrs: { "data-copy": "sample" },
   italic: true,
   includeHighlights: true,
   highlightLines: { lines: [1], style: "theme", class: "active" },
+  lineNumbers: true,
   header: { openTag: "<figure>", closeTag: "</figure>" },
 };
 
@@ -75,6 +84,7 @@ const terminal: Required<TerminalOptions> = {
   background: "theme",
   width: 120,
   highlightLines: { lines: [1], background: "#3a3a3a" },
+  lineNumbers: true,
 };
 
 const bbcodeScoped: Required<BBCodeScopedOptions> = {

@@ -6,6 +6,7 @@ import {
   closePreTag,
   closeTag,
   closingTags,
+  codeAttrs,
   escape,
   escapeAttr,
   escapeBraces,
@@ -21,6 +22,7 @@ import {
   openPreTag,
   openSpanTag,
   openTag,
+  preAttrs,
   renderEvents,
   renderLinesFromEvents,
   scopeToClass,
@@ -133,6 +135,43 @@ describe("formatter shared helpers", () => {
     );
   });
 
+  it("merges authored pre attributes after generated attributes", () => {
+    const attrs = preAttrs({
+      preClass: "custom",
+      theme,
+      attrs: {
+        class: "custom authored",
+        style: "outline: 1px solid red",
+        id: 'sample"pre',
+      },
+    });
+
+    expect(attrs).toEqual({
+      class: "lumis custom authored",
+      style: "color: #ffffff; background-color: #000000; outline: 1px solid red",
+      id: 'sample"pre',
+    });
+    expect(openPreTag({ preClass: "custom", theme, attrs: { class: "authored" } })).toContain(
+      'class="lumis custom authored"',
+    );
+  });
+
+  it("lets authored code attributes override defaults", () => {
+    expect(
+      codeAttrs(jsonLang, {
+        class: "copyable language-json",
+        translate: "yes",
+        tabindex: -1,
+        "data-copy": "button",
+      }),
+    ).toEqual({
+      class: "language-json copyable",
+      translate: "yes",
+      tabindex: -1,
+      "data-copy": "button",
+    });
+  });
+
   it("wraps highlighted output with an optional header", () => {
     expect(
       wrapWithHeader("<pre></pre>", {
@@ -220,6 +259,8 @@ describe("formatter shared helpers", () => {
           language: jsonLang,
           theme: undefined,
           lines: undefined,
+          lineNumbers: false,
+          lineNumberAttrs: { regular: {}, highlighted: {} },
           highlightedAttrs: {},
           openSpan: () => '<span class="scope">',
         },
