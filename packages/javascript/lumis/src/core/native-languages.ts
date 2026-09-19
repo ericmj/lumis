@@ -589,9 +589,9 @@ export function createNativeLanguagesModule(
 
       switch (kind) {
         case "html-inline":
-return { ...nativeHtmlInlineFormatter(builtin, rainbowBrackets), matchLimit };
+          return { ...nativeHtmlInlineFormatter(builtin, rainbowBrackets), matchLimit };
         case "html-linked":
-return { ...nativeHtmlLinkedFormatter(builtin, rainbowBrackets), matchLimit };
+          return { ...nativeHtmlLinkedFormatter(builtin, rainbowBrackets), matchLimit };
         case "bbcode-scoped":
           return {
             rainbowBrackets,
