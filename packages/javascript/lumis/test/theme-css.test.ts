@@ -46,6 +46,24 @@ describe("buildCss", () => {
   background-color: gray;
   font-weight: bold;
 }
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 `;
 
     expect(buildCss(sample)).toBe(expected);
@@ -74,6 +92,24 @@ html[data-theme="dark"] .l-line-number-highlighted {
 html[data-theme="dark"] .l-tag-attribute {
   background-color: gray;
   font-weight: bold;
+}
+@layer lumis {
+  html[data-theme="dark"] pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  html[data-theme="dark"] pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  html[data-theme="dark"] .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
 }
 `;
 

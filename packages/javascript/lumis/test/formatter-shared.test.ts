@@ -195,7 +195,7 @@ describe("formatter shared helpers", () => {
 
   it("wraps lines with optional class and style", () => {
     expect(wrapLine(2, "code", { className: "highlighted", style: "color: red;" })).toBe(
-      '<div class="l-line highlighted" style="color: red;" data-line="2">code</div>',
+      '<span class="l-line highlighted" style="color: red;" data-line="2">code</span>',
     );
   });
 
@@ -246,7 +246,7 @@ describe("formatter shared helpers", () => {
     ]);
   });
 
-  it("writes source endings after syntax spans in built-in HTML lines", () => {
+  it("writes normalized newlines between line spans", () => {
     expect(
       formatHtmlLines(
         "a\r\nb",
@@ -266,9 +266,25 @@ describe("formatter shared helpers", () => {
         },
       ),
     ).toBe(
-      '<div class="l-line" data-line="1"><span class="scope">a</span>\r\n</div>' +
-        '<div class="l-line" data-line="2"><span class="scope">b</span></div>',
+      '<span class="l-line" data-line="1"><span class="scope">a</span></span>\n' +
+        '<span class="l-line" data-line="2"><span class="scope">b</span></span>',
     );
+  });
+
+  it("keeps CRLF intact for non-HTML consumers when scopes split the terminator", () => {
+    const { lines } = formatHighlightIterLines(
+      "a\r\nb",
+      [
+        { type: "start", scope: "string", language: "json" },
+        { type: "source", start: 0, end: 2 },
+        { type: "end" },
+        { type: "source", start: 2, end: 4 },
+      ],
+      jsonLang,
+      undefined,
+      { openSpan: () => "<span>" },
+    );
+    expect(lines).toEqual(["<span>a</span>\r\n", "b"]);
   });
 
   it("keeps a deliberately omitted custom span balanced", () => {
@@ -304,7 +320,34 @@ describe("formatter shared helpers", () => {
       (scope) => `class="${scope}"`,
     );
 
-    expect(lines).toEqual(['<span class="string">a</span>\n', '<span class="string">b</span>']);
+    expect(lines).toEqual(['<span class="string">a</span>', '<span class="string">b</span>']);
+  });
+
+  // Rust hands a rainbow bracket the language of the stream's first scope. A
+  // bracket that opens before any text used to get `plaintext` here instead.
+  it("passes the stream's language to a rainbow bracket that opens first", () => {
+    const languages: string[] = [];
+
+    renderLinesFromEvents(
+      "(a)",
+      [
+        { type: "start", scope: "punctuation.bracket", language: "javascript" },
+        { type: "decorationStart", decoration: { type: "rainbowBracket", depth: 0 } },
+        { type: "source", start: 0, end: 1 },
+        { type: "decorationEnd" },
+        { type: "end" },
+        { type: "source", start: 1, end: 3 },
+      ],
+      (scope, language) => {
+        languages.push(`${scope}@${language}`);
+        return "";
+      },
+    );
+
+    expect(languages).toEqual([
+      "punctuation.bracket@javascript",
+      "punctuation.bracket.rainbow.1@javascript",
+    ]);
   });
 
   it("shrinks source ranges that split a UTF-8 character", () => {
@@ -344,7 +387,7 @@ describe("formatter shared helpers", () => {
       () => "",
     );
 
-    expect(lines).toEqual(["<span>a</span>\n", "<span>b</span>"]);
+    expect(lines).toEqual(["<span>a</span>", "<span>b</span>"]);
   });
 
   it("opens a bare span in renderEvents when the callback writes nothing", () => {

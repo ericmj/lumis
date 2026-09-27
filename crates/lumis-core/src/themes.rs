@@ -664,6 +664,39 @@ impl<'a> CssBuilder<'a> {
     }
 }
 
+/// The line layout every theme stylesheet carries after its colors.
+///
+/// It is written inside `@layer lumis`, so any CSS outside a layer overrides it,
+/// and a Tailwind v4 site that declares `lumis` before its own layers overrides
+/// it with utilities. `span.l-line` skips the `<div>` lines older output has,
+/// which would otherwise all land on one row. `fit-content` keeps a wrapping
+/// block inside its container, and `overflow-wrap: anywhere` stops one long
+/// token from widening every line of it.
+const LAYOUT_RULES: [(&str, &[&str]); 3] = [
+    (
+        "pre.lumis > code",
+        &[
+            "display: block",
+            "width: fit-content",
+            "min-width: 100%",
+            "overflow-wrap: anywhere",
+        ],
+    ),
+    (
+        "pre.lumis > code > span.l-line",
+        &[
+            "display: inline-block",
+            "width: 100%",
+            "min-height: 1lh",
+            "vertical-align: top",
+        ],
+    ),
+    (
+        ".l-line-number",
+        &["-webkit-user-select: none", "user-select: none"],
+    ),
+];
+
 impl Css<'_> {
     fn render(&self) -> String {
         let mut rules = Vec::new();
@@ -703,7 +736,25 @@ impl Css<'_> {
             }
         }
 
+        rules.push(self.layout());
+
         rules.join("")
+    }
+
+    /// [`LAYOUT_RULES`] in `@layer lumis`, scoped like every other rule.
+    fn layout(&self) -> String {
+        let rules: Vec<String> = LAYOUT_RULES
+            .iter()
+            .map(|(selector, declarations)| {
+                format!(
+                    "  {} {{\n    {};\n  }}\n",
+                    self.scoped_selector(selector),
+                    declarations.join(";\n    ")
+                )
+            })
+            .collect();
+
+        format!("@layer lumis {{\n{}}}\n", rules.concat())
     }
 
     /// The selector a scope's rule hangs off.
@@ -965,6 +1016,24 @@ mod tests {
   background-color: gray;
   font-weight: bold;
 }
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 ";
 
         assert_eq!(
@@ -1060,6 +1129,24 @@ html[data-theme="dark"] .lumis {
 html[data-theme="dark"] .l-keyword {
   color: blue;
 }
+@layer lumis {
+  html[data-theme="dark"] pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  html[data-theme="dark"] pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  html[data-theme="dark"] .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 "#;
 
         assert_eq!(
@@ -1088,6 +1175,24 @@ html[data-theme="dark"] .l-keyword {
   color: blue;
   font-style: italic;
 }
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 ";
 
         // No `enable_italic` call: the default must be `true`.
@@ -1103,6 +1208,24 @@ html[data-theme="dark"] .l-keyword {
  * revision: abc
  */
 .lumis {}
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 ";
 
         assert_eq!(CssBuilder::new(&theme).build(), expected);
@@ -1123,6 +1246,24 @@ html[data-theme="dark"] .l-keyword {
 }
 .l-keyword {
   color: blue;
+}
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
 }
 ";
 
@@ -1146,6 +1287,24 @@ html[data-theme="dark"] .l-keyword {
   color: red;
   background-color: #000;
 }
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 ";
 
         assert_eq!(
@@ -1167,6 +1326,24 @@ html[data-theme="dark"] .l-keyword {
 .lumis {
   color: red;
   background-color: #000;
+}
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
 }
 ";
 
@@ -1205,6 +1382,24 @@ html[data-theme="dark"] .l-keyword {
   padding: 1rem;
   overflow-x: auto;
 }
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 ";
 
         assert_eq!(
@@ -1233,6 +1428,24 @@ html[data-theme="dark"] .l-keyword {
 .app .l-keyword {
   color: blue;
 }
+@layer lumis {
+  .app pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .app pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .app .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 ";
 
         assert_eq!(CssBuilder::new(&theme).scope(".app").build(), expected);
@@ -1252,6 +1465,24 @@ html[data-theme="dark"] .l-keyword {
   font-weight: bold;
   font-style: italic;
   text-decoration: underline double line-through;
+}
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
 }
 ";
 

@@ -365,3 +365,21 @@
   color: #87e58e;
   font-style: italic;
 }
+@layer lumis {
+  pre.lumis > code {
+    display: block;
+    width: fit-content;
+    min-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  pre.lumis > code > span.l-line {
+    display: inline-block;
+    width: 100%;
+    min-height: 1lh;
+    vertical-align: top;
+  }
+  .l-line-number {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}

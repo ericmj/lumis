@@ -191,11 +191,12 @@ Lumis.highlight!(
   </Tab>
 </Tabs>
 
-## Class without an inline style
+## Class without inline colors
 
-Omitting the style uses the theme's `highlighted` style. To highlight by class
-alone, so a stylesheet or a utility framework owns the appearance, opt out of
-the inline style explicitly:
+Leaving `style` out uses the theme's `highlighted` style. To color highlighted
+lines with your own class instead, from a stylesheet or a Tailwind utility, turn
+the inline colors off. The line keeps its inline layout, so the class only has to
+set a background:
 
 <Tabs groupId="runtime" persist items={['JavaScript / TypeScript', 'Rust', 'Elixir', 'CLI']}>
   <Tab value="JavaScript / TypeScript">
@@ -249,6 +250,19 @@ lumis highlight -f html-inline -H 2 \
 
   </Tab>
 </Tabs>
+
+## Full-width backgrounds
+
+A highlighted line spans the whole block, including the part you only reach by
+scrolling sideways. For HTML Linked, the theme stylesheet does this with a few
+rules in `@layer lumis`. HTML Inline and HTML Multi-Themes write the same
+declarations inline when lines are highlighted. The
+[Line layout](/themes/css-files#line-layout) section lists the rules.
+
+If you style lines yourself, keep `.l-line` inline or inline-block. With
+`display: block`, the newline between two lines becomes an extra blank row. Add
+`box-sizing: border-box` when your line rule adds padding or a border. For
+Tailwind, see [Tailwind CSS](/recipes/tailwind-css).
 
 ## What changes between formatters
 
@@ -308,7 +322,7 @@ lumis highlight -f terminal -H 1,3-4 \
 ### BBCode Scoped
 
 A highlighted line is wrapped in `[highlighted]...[/highlighted]`, newline
-included, the way an HTML line sits inside its `<div>`. The tag is derived from
+included. Unlike HTML, BBCode keeps its source terminators. The tag is derived from
 the `highlighted` theme scope exactly as every other tag this formatter emits is
 derived from a scope, so there is nothing to configure; the consumer defines what
 `[highlighted]` looks like, as it already must for `[keyword-rust]`.
@@ -317,7 +331,6 @@ derived from a scope, so there is nothing to configure; the consumer defines wha
 lumis highlight -f bbcode-scoped -H 1,3-4 main.rs
 ```
 
-Without `highlight_lines` these two formatters emit exactly what they did
-before. Neither carries line structure of its own, so lines only enter the
-stream when there is a line to mark — which is also why a scope spanning a
-newline is closed and reopened once you ask for highlighting, and not before.
+Without `highlight_lines`, Terminal and BBCode emit tokens without line
+wrappers. Line highlighting closes and reopens scopes at line boundaries so it
+can mark individual lines.
