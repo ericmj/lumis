@@ -1,6 +1,7 @@
 import { LANGUAGES } from "../generated/languages-meta.js";
 import { cloneLanguageInfo } from "../catalog-metadata.js";
 import { LANGUAGE_LOADERS } from "../generated/language-loaders.js";
+import { LANGUAGE_PACKAGE_NAMES } from "../generated/language-packages.js";
 import { LANGUAGE_PACKAGE_VERSION_RANGE } from "../generated/package-version-range.js";
 import type {
   NativeBinding,
@@ -28,13 +29,7 @@ import { isInlineStructure } from "../formatter/html-structure.js";
 import { assertBudget, warnUnresolvedInjection } from "../events.js";
 import { decodeNativeEvents } from "./native-event-codec.js";
 import { PLAINTEXT_LANG_ID } from "../types.js";
-import {
-  DEFAULT_LANGUAGE_PACKAGE_RESOLVER,
-  DEFAULT_RESOLVER,
-  normalizeLanguageName,
-  parseLanguagePackage,
-  verifyWasm,
-} from "./languages.js";
+import { DEFAULT_RESOLVER, normalizeLanguageName, notDeclared, verifyWasm } from "./languages.js";
 import type {
   HighlighterRuntimeOptions,
   LanguagePackageResolver,
@@ -168,7 +163,7 @@ async function readWasmInput(wasm: RuntimeWasmInput): Promise<Uint8Array> {
 /**
  * Node highlighting over the Wasmtime addon.
  *
- * Rust resolves, verifies, caches and loads parsers by default, which is what
+ * Rust loads parsers from the packages this project installed, which is what
  * lets an injected language load during the walk that finds it. A caller can
  * still take that over — `configureWasmResolver`, `configureLanguagePackageResolver`,
  * an explicit `wasm`, or a complete custom `Language` — and those all mean the
@@ -184,51 +179,67 @@ async function readWasmInput(wasm: RuntimeWasmInput): Promise<Uint8Array> {
 const resolverSource = (source: string | URL): string =>
   source instanceof URL ? source.href : source;
 
+/**
+ * Whether a language came from a package this project also installed. It is
+ * that package, so it stays on the installed path, where the shared runtime
+ * keeps it and a native walk loads what it injects.
+ */
+function isImportedInstalled(
+  opts: LoadLanguageOptions,
+  manifests: Record<string, string> | undefined,
+): boolean {
+  return (
+    opts.languagePackage !== undefined &&
+    opts.packageName !== undefined &&
+    manifests?.[opts.packageName] !== undefined
+  );
+}
+
 export function createNativeLanguagesModule(
   binding: NativeBinding,
   resolvers: LanguagesModule,
-  installedPackages?: () => Promise<string[]>,
+  resolveInstalledManifests?: (packageNames: readonly string[]) => Promise<Map<string, URL>>,
 ): LanguagesModule {
   let globalWasmResolver: WasmResolver | undefined;
   let globalLanguagePackageResolver: LanguagePackageResolver | undefined;
   let resolverCallbackDepth = 0;
 
   /**
-   * Hand the addon the directories the environment names before it builds its
-   * store. The first runtime freezes that configuration for every later shared
-   * or isolated runtime. `LUMIS_DATA_DIR` can be set at any point in a Node
-   * process, and a caller that sets it late would otherwise silently keep
-   * writing to the platform cache directory.
+   * Hand the addon the data directory the environment names before it builds
+   * its first runtime, which fixes where compiled parsers are kept.
+   * `LUMIS_DATA_DIR` can be set at any point in a Node process, and a caller
+   * that sets it late would otherwise silently keep writing to the platform
+   * data directory.
    */
   function newNativeRuntime(): NativeRuntimeInstance {
     binding.configureStore(process.env.LUMIS_DATA_DIR);
     return new binding.NativeRuntime();
   }
 
-  /**
-   * Tell the addon whether this project declared its languages, once.
-   *
-   * The addon resolves injected languages itself, inside a native walk, without
-   * coming back to JavaScript — so the TypeScript check above cannot see them.
-   * Both sides have to know, or an injection would be fetched on Node and
-   * refused in the browser.
-   */
-  let declarationTold: Promise<void> | undefined;
+  let installed: Promise<Record<string, string> | undefined> | undefined;
 
   /**
-   * Hand the addon the packages this project installed, once.
+   * Hand the addon the `lumis.json` of every package this project installed,
+   * once, and keep them to check a load against.
    *
-   * The addon resolves injected languages itself, inside a native walk, without
-   * coming back to JavaScript — so the TypeScript check cannot see them. Both
-   * sides have to know, or an injection would be fetched on Node and refused in
-   * the browser.
+   * Those packages are the whole set Node loads from. The addon reads them
+   * itself, because it loads a language injected inside a document during a
+   * native walk, without coming back to JavaScript.
    */
-  function tellAddon(): Promise<void> {
-    declarationTold ??= (async () => {
-      if (!installedPackages) return;
-      binding.setInstalledPackages(await installedPackages());
+  function tellAddon(): Promise<Record<string, string> | undefined> {
+    installed ??= (async () => {
+      if (!resolveInstalledManifests) return;
+      const { fileURLToPath } = await import("node:url");
+      const manifests: Record<string, string> = {};
+      for (const [packageName, manifest] of await resolveInstalledManifests(
+        LANGUAGE_PACKAGE_NAMES,
+      )) {
+        manifests[packageName] = fileURLToPath(manifest);
+      }
+      binding.setInstalledPackages(manifests);
+      return manifests;
     })();
-    return declarationTold;
+    return installed;
   }
 
   function hasResolverOverride(state: NativeResolverState): boolean {
@@ -244,11 +255,10 @@ export function createNativeLanguagesModule(
     state: NativeResolverState,
     packageName: string,
   ): string | undefined {
-    if (!hasResolverOverride(state)) return undefined;
-    const resolver =
-      state.languagePackageResolver ??
-      globalLanguagePackageResolver ??
-      DEFAULT_LANGUAGE_PACKAGE_RESOLVER;
+    // Without a package resolver of its own, the caller has not said where
+    // packages come from, so the addon loads the installed one.
+    const resolver = state.languagePackageResolver ?? globalLanguagePackageResolver;
+    if (!resolver) return undefined;
     resolverCallbackDepth += 1;
     try {
       return resolverSource(resolver(packageName, LANGUAGE_PACKAGE_VERSION_RANGE));
@@ -325,8 +335,9 @@ export function createNativeLanguagesModule(
     resolveLanguagePackage(
       language: LanguageDefinition,
       packageName: string,
+      languagePackage?: object,
     ): Promise<ResolvedLanguagePackage> {
-      return this.resolver.resolveLanguagePackage(language, packageName);
+      return this.resolver.resolveLanguagePackage(language, packageName, languagePackage);
     }
 
     resolveParserWasm(language: string, wasm: WasmRef): Promise<Uint8Array> {
@@ -382,10 +393,14 @@ export function createNativeLanguagesModule(
      * stays on the Rust path, where a language injected inside the document
      * still loads mid-walk.
      */
-    private async isCallerResolved(opts: LoadLanguageOptions): Promise<boolean> {
+    private async isCallerResolved(
+      opts: LoadLanguageOptions,
+      manifests: Record<string, string> | undefined,
+    ): Promise<boolean> {
+      const importedInstalled = isImportedInstalled(opts, manifests);
       if (
         hasResolverOverride(this.resolverState) ||
-        opts.wasm !== undefined ||
+        (opts.wasm !== undefined && !importedInstalled) ||
         !CATALOG_LANGUAGE_IDS.has(normalizeLanguageName(opts.definition.id))
       ) {
         return true;
@@ -396,16 +411,13 @@ export function createNativeLanguagesModule(
     }
 
     private async loadThroughAddon(opts: LoadLanguageOptions): Promise<AddonLanguage> {
-      // Before anything else. Loading an installed parser returns without ever
-      // reaching the addon's own resolution, but the walk that follows still
-      // resolves *injected* languages in Rust — so a project whose parsers are
-      // all installed would otherwise leave the addon thinking nothing was
-      // declared, and fetch an injected language it never declared.
-      await tellAddon();
+      // Before anything else: the walk that follows loads injected languages
+      // from these in Rust, whichever way the root was loaded.
+      const manifests = await tellAddon();
 
-      if (!(await this.isCallerResolved(opts))) {
-        const installed = await this.loadInstalled(opts);
-        if (installed) return installed;
+      if (!(await this.isCallerResolved(opts, manifests))) {
+        const packageName = opts.packageName!;
+        if (manifests && !manifests[packageName]) throw notDeclared(packageName, packageName);
         this.native.loadLanguage(opts.definition.id);
         return { addonId: opts.definition.id, definition: opts.definition };
       }
@@ -416,7 +428,11 @@ export function createNativeLanguagesModule(
         throw new Error(`Language "${opts.definition.id}" has no packageName`);
       }
 
-      const packaged = await this.resolveLanguagePackage(opts.definition, opts.packageName);
+      const packaged = await this.resolveLanguagePackage(
+        opts.definition,
+        opts.packageName,
+        opts.languagePackage,
+      );
       const resolved = { ...packaged, ...(opts.wasm === undefined ? {} : { wasm: opts.wasm }) };
       if (!resolved.wasm || resolved.highlights === undefined) {
         throw new Error(`Language package "${opts.packageName}" has no parser or highlights query`);
@@ -462,55 +478,6 @@ export function createNativeLanguagesModule(
         if (this.languageLoads.get(loadKey) === load) {
           this.languageLoads.delete(loadKey);
         }
-      }
-    }
-
-    /**
-     * Whether an installed `@lumis-sh/wasm-*` package supplied this language.
-     *
-     * Node can resolve one and the addon cannot, since a package sits wherever
-     * the package manager put it rather than under a directory the store scans.
-     */
-    private async loadInstalled(opts: LoadLanguageOptions): Promise<AddonLanguage | undefined> {
-      const { packageName } = opts;
-      const id = opts.definition.id;
-      if (!packageName) return undefined;
-      try {
-        // Through the package's export map, not its default export: in Node
-        // that entry point *is* the parser bytes, so there was never a URL
-        // there to resolve the manifest against.
-        const { createRequire } = await import("node:module");
-        const { pathToFileURL } = await import("node:url");
-        const { join } = await import("node:path");
-        const resolveFromProject = createRequire(pathToFileURL(join(process.cwd(), "noop.js")));
-        const manifestUrl = pathToFileURL(resolveFromProject.resolve(`${packageName}/lumis.json`));
-        const { readFile } = await import("node:fs/promises");
-        const { fileURLToPath } = await import("node:url");
-        const read = async (name: string) => readFile(fileURLToPath(new URL(name, manifestUrl)));
-
-        const manifest = await read("lumis.json");
-        const packageJson = manifest.toString("utf8");
-        const metadata = parseLanguagePackage(manifest, packageName);
-        const packaged = Object.entries(metadata.languages).find(
-          ([languageId, definition]) =>
-            normalizeLanguageName(languageId) === normalizeLanguageName(id) ||
-            definition.aliases.some(
-              (alias) => normalizeLanguageName(alias) === normalizeLanguageName(id),
-            ),
-        );
-        if (!packaged) return undefined;
-        const [resolvedId, definition] = packaged;
-        return {
-          addonId: this.native.loadInstalledLanguagePackage(
-            id,
-            packageName,
-            packageJson,
-            await read(`${metadata.parser.name}.wasm`),
-          ),
-          definition: { id: resolvedId, aliases: definition.aliases },
-        };
-      } catch {
-        return undefined;
       }
     }
 
@@ -686,8 +653,8 @@ export function createNativeLanguagesModule(
       resolvers.configureLanguagePackageResolver(fn);
       defaultRuntime.configureLanguagePackageResolver(fn);
     },
-    resolveLanguagePackage(language, packageName) {
-      return defaultRuntime.resolveLanguagePackage(language, packageName);
+    resolveLanguagePackage(language, packageName, manifest) {
+      return defaultRuntime.resolveLanguagePackage(language, packageName, manifest);
     },
     resolveParserWasm(language, wasm) {
       return defaultRuntime.resolveParserWasm(language, wasm);

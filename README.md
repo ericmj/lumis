@@ -77,29 +77,34 @@ let html = highlight("const x = 1", formatter);
 
 Use the same package in JavaScript and TypeScript apps on Node.js, Bun, and Deno. TypeScript declarations are included.
 
+```sh
+npm install @lumis-sh/lumis @lumis-sh/themes @lumis-sh/wasm-javascript
+```
+
 ```javascript
 import { highlight } from '@lumis-sh/lumis'
 import { htmlInline } from '@lumis-sh/lumis/formatters'
-import javascript from '@lumis-sh/lumis/langs/javascript'
 import dracula from '@lumis-sh/themes/dracula'
+import javascript from '@lumis-sh/wasm-javascript'
 
 const html = await highlight('const x = 1', htmlInline({ language: javascript, theme: dracula }))
 ```
 
+Each language is its own package, and its default export is the language.
 Parsers load on demand from the packages you install, including languages
-injected inside a document. Browsers are the exception: loading is asynchronous
-there, so an injected language has to be loaded first. See
-[Languages](https://docs.lumis.sh/languages).
+injected inside a document. Browsers load only the packages you import, and
+since loading is asynchronous there, an injected language has to be loaded
+first. See [Languages](https://docs.lumis.sh/languages).
 
 ### [Browsers / CDN](https://www.npmjs.com/package/@lumis-sh/lumis)
 
-Works in Browsers through bundlers or CDN imports.
+Works in Browsers through bundlers or CDN imports, with the same imports.
 
 ```javascript
 import { highlight } from 'https://esm.sh/@lumis-sh/lumis'
 import { htmlInline } from 'https://esm.sh/@lumis-sh/lumis/formatters'
-import javascript from 'https://esm.sh/@lumis-sh/lumis/langs/javascript'
 import dracula from 'https://esm.sh/@lumis-sh/themes/dracula'
+import javascript from 'https://esm.sh/@lumis-sh/wasm-javascript'
 
 const html = await highlight('const x = 1', htmlInline({ language: javascript, theme: dracula }))
 ```
@@ -110,9 +115,10 @@ const html = await highlight('const x = 1', htmlInline({ language: javascript, t
 Lumis.highlight!("const x = 1", formatter: {:html_inline, language: "javascript", theme: "dracula"})
 ```
 
-Parsers download on demand and load once per VM. Call
-`Lumis.Languages.async_load/1` from your application's `start/2` to move the
-download and compile off the first request without holding up the boot.
+A parser is a Hex dependency, such as `{:lumis_wasm_javascript, "~> 0.26.0"}`,
+and loads once per VM. Call `Lumis.Languages.async_load/1` from your
+application's `start/2` to move the compile off the first request without
+holding up the boot.
 See [Elixir integration](https://docs.lumis.sh/usage/elixir).
 
 ### [Java](https://github.com/roastedroot/lumis4j)

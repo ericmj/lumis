@@ -1,2 +1,23 @@
-declare const wasmUrl: URL
-export default wasmUrl
+/**
+ * A language from this package. Pass it to `createHighlighter({ languages })`
+ * from `@lumis-sh/lumis`, in Node or in a browser.
+ */
+export interface Language {
+  id: string
+  aliases: string[]
+  packageName: string
+  /** The parser, which a bundler ships next to your code. */
+  wasm: URL
+  languagePackage: LanguagePackage
+  /** Grammars this language cannot highlight without, loaded along with it. */
+  requires?: Language[]
+}
+
+/** This package's `lumis.json`: the parser's size and digest, and the queries released with it. */
+export interface LanguagePackage {
+  packageName: string
+  version: string
+  [field: string]: unknown
+}
+
+export declare const languagePackage: LanguagePackage

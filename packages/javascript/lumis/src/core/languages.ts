@@ -3,7 +3,6 @@ import satisfies from "semver/functions/satisfies.js";
 import minVersion from "semver/ranges/min-version.js";
 import { buildHighlightEventsWithSourceIndex } from "../events.js";
 import { LANGUAGES } from "../generated/languages-meta.js";
-import { LANGUAGE_PACKAGE_NAMES } from "../generated/language-packages.js";
 import { cloneLanguageInfo, normalizeLanguageName } from "../catalog-metadata.js";
 import { LANGUAGE_PACKAGE_VERSION_RANGE } from "../generated/package-version-range.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -121,6 +120,8 @@ export interface LoadLanguageOptions {
   packageName?: string;
   /** Where the parser bytes come from. Queries always come from the package. */
   wasm?: WasmRef | Uint8Array | ArrayBuffer | string | URL | Response;
+  /** The `lumis.json` of an imported package, so nothing has to be resolved. */
+  languagePackage?: object;
 }
 
 export interface HighlighterRuntimeOptions {
@@ -141,6 +142,7 @@ export interface RuntimeLike {
   resolveLanguagePackage(
     language: LanguageDefinition,
     packageName: string,
+    languagePackage?: object,
   ): Promise<ResolvedLanguagePackage>;
   /** Parser bytes for `wasm`, resolved through this runtime's resolver, verified and cached. */
   resolveParserWasm(language: string, wasm: WasmRef): Promise<Uint8Array>;
@@ -181,6 +183,7 @@ export interface LanguagesModule {
   resolveLanguagePackage(
     language: LanguageDefinition,
     packageName: string,
+    languagePackage?: object,
   ): Promise<ResolvedLanguagePackage>;
   resolveParserWasm(language: string, wasm: WasmRef): Promise<Uint8Array>;
   loadPlaintext(): Promise<LoadedLanguage>;
@@ -211,11 +214,30 @@ export const DEFAULT_LANGUAGE_PACKAGE_RESOLVER: LanguagePackageResolver = (
  *
  * No install command, because there is no way to know which package manager the
  * project uses, and printing the wrong one is worse than printing none.
+ *
+ * A package published before it shipped a `lumis.json` cannot be loaded either,
+ * so updating is the fix when it is already there.
+ *
+ * @internal
  */
-function notDeclared(what: string, install: string): Error {
+export function notDeclared(what: string, install: string): Error {
   return new Error(
     `${what} is not one of the @lumis-sh/wasm-* packages this project depends on` +
-      `\n  add ${install} to its dependencies`,
+      `\n  add ${install} to its dependencies, or update it if it is there`,
+  );
+}
+
+/**
+ * Raised in a browser for a package that was not imported. A browser has no
+ * project to read, so what it imports is what it declares.
+ *
+ * @internal
+ */
+export function notImported(what: string, packageName: string): Error {
+  return new Error(
+    `${what} was not imported` +
+      `\n  import ${packageName} and pass the whole package to withWasm(), updating it if it has` +
+      `\n  no \`languagePackage\` export, or configure a resolver`,
   );
 }
 
@@ -270,10 +292,6 @@ function isRuntimeWasmInput(
   wasm: NonNullable<LoadLanguageOptions["wasm"]>,
 ): wasm is Uint8Array | ArrayBuffer | string | URL | Response {
   return !(typeof wasm === "object" && wasm !== null && isWasmRef(wasm));
-}
-
-export function languagePackageCacheKey(packageName: string): string {
-  return `language-package-${packageName}`;
 }
 
 export function parseLanguagePackage(
@@ -568,10 +586,6 @@ function isSafePackagePathSegment(value: string): boolean {
     !hasForbiddenCharacter &&
     !/^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])$/i.test(stem)
   );
-}
-
-export function serializeLanguagePackageCache(packageMetadata: LanguagePackage): Uint8Array {
-  return encoder.encode(JSON.stringify(packageMetadata));
 }
 
 /** @internal */
@@ -1038,8 +1052,6 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
   let configuredDefaultResolver: WasmResolver = DEFAULT_RESOLVER;
   let configuredLanguagePackageResolver: LanguagePackageResolver =
     DEFAULT_LANGUAGE_PACKAGE_RESOLVER;
-  // Asked once: a project's installed packages do not change while it runs.
-  let installedPackageNames: Promise<string[]> | undefined;
   const moduleCache = createSharedRuntimeCache();
   const parserModules = new Map<string, CachedParserModule>();
 
@@ -1094,38 +1106,30 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       return this.explicitLanguagePackageResolver ?? configuredLanguagePackageResolver;
     }
 
-    /**
-     * Whether `packageName` may be fetched.
-     *
-     * Installing the package is the declaration, and that is the whole test —
-     * not whether the package ships a manifest of its own. A parser published
-     * before manifests were part of a package is still one this project chose,
-     * so it still resolves, from the CDN if that is the only place its
-     * `lumis.json` exists.
-     *
-     * The browser has no project to read: a bundle declares by what it
-     * imported, so nothing here constrains it.
-     */
-    private async mayDownload(packageName: string): Promise<boolean> {
-      if (!runtime.declaresLanguages || !runtime.installedPackages) return true;
-      installedPackageNames ??= runtime.installedPackages(LANGUAGE_PACKAGE_NAMES);
-      return (await installedPackageNames).includes(packageName);
+    /** Whether the caller supplied either resolver, and so said where parsers come from. */
+    private get callerResolved(): boolean {
+      return (
+        this.resolver !== DEFAULT_RESOLVER ||
+        this.languagePackageResolver !== DEFAULT_LANGUAGE_PACKAGE_RESOLVER
+      );
     }
 
     private acceptsPackage(packageMetadata: LanguagePackage): boolean {
       return isCompatibleLanguagePackageVersion(packageMetadata.version);
     }
 
-    private async readCachedLanguagePackage(
-      packageName: string,
-    ): Promise<LanguagePackage | undefined> {
-      const bytes = await runtime.readFsCache(languagePackageCacheKey(packageName));
-      if (!bytes) return undefined;
-      try {
-        return parseLanguagePackage(bytes, packageName);
-      } catch {
-        return undefined;
-      }
+    /**
+     * The language package an imported package carries, checked the way one
+     * read from disk or a resolver is. It is the package's own, so nothing is
+     * resolved.
+     */
+    private importedPackage(languagePackage: object, packageName: string): LanguagePackage {
+      const packageMetadata = parseLanguagePackage(
+        encoder.encode(JSON.stringify(languagePackage)),
+        packageName,
+      );
+      if (!this.acceptsPackage(packageMetadata)) throw incompatiblePackageVersion(packageMetadata);
+      return packageMetadata;
     }
 
     /**
@@ -1159,15 +1163,6 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
         if (this.acceptsPackage(packageMetadata)) return packageMetadata;
         throw incompatiblePackageVersion(packageMetadata);
       }
-      // Only the default resolver is governed by what the project installed.
-      // A caller that supplied its own said where parsers come from, which is a
-      // declaration in itself — the same reason Elixir's `:parser_dirs` is one.
-      if (
-        resolver === DEFAULT_LANGUAGE_PACKAGE_RESOLVER &&
-        !(await this.mayDownload(packageName))
-      ) {
-        throw notDeclared(packageName, packageName);
-      }
       const href = typeof source === "string" ? source : source.href;
       const response = await fetchFromCdns(
         href,
@@ -1184,6 +1179,15 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
     }
 
     private async resolvePackage(packageName: string): Promise<LanguagePackage> {
+      // A caller that supplied its own resolver said where packages come from,
+      // which is a declaration in itself, the same reason Elixir's
+      // `:parser_dirs` is one. It outranks what is installed and anything
+      // cached, as it does in a native walk. That includes what another
+      // highlighter resolved, so its answer is not shared either.
+      if (this.languagePackageResolver !== DEFAULT_LANGUAGE_PACKAGE_RESOLVER) {
+        return this.fetchLanguagePackage(packageName);
+      }
+
       // Every branch below either returns a package this runtime accepts or
       // throws, so what the shared cache holds is already compatible. Rechecking
       // it here would start a second load for the same name and leave two
@@ -1194,26 +1198,14 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       if (inFlight) return inFlight;
 
       const load = (async () => {
-        const staged = await runtime.readStagedAsset?.(
-          `${packageName.replace(/^@lumis-sh\/wasm-/, "")}.lumis.json`,
-        );
-        if (staged) {
-          const packageMetadata = parseLanguagePackage(staged, packageName);
-          if (this.acceptsPackage(packageMetadata)) return packageMetadata;
-        }
-
+        // A Node project loads what it installed. A browser has nothing
+        // installed to read, so it loads only packages passed in with
+        // `withWasm()`, which never reach this far.
+        if (!runtime.resolveInstalledManifest) throw notImported(packageName, packageName);
         const installed = await this.loadInstalledLanguagePackage(packageName);
-        if (installed && this.acceptsPackage(installed)) return installed;
-
-        const cached = await this.readCachedLanguagePackage(packageName);
-        if (cached && this.acceptsPackage(cached)) return cached;
-
-        const packageMetadata = await this.fetchLanguagePackage(packageName);
-        await runtime.writeFsCache(
-          languagePackageCacheKey(packageName),
-          serializeLanguagePackageCache(packageMetadata),
-        );
-        return packageMetadata;
+        if (!installed) throw notDeclared(packageName, packageName);
+        if (!this.acceptsPackage(installed)) throw incompatiblePackageVersion(installed);
+        return installed;
       })().then((value) => {
         this.sharedCache.packages.set(packageName, value);
         return value;
@@ -1234,58 +1226,33 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       return undefined;
     }
 
-    private async loadInstalledPackage(ref: WasmRef): Promise<Uint8Array | undefined> {
+    /**
+     * The parser beside the manifest a project installed, which is what the
+     * native addon reads. An `import()` from here would resolve from Lumis's own
+     * directory, and under pnpm that is not where the project's packages are.
+     */
+    private async readInstalledParser(ref: WasmRef): Promise<Uint8Array | undefined> {
+      const manifest = await runtime.resolveInstalledManifest?.(ref.packageName);
+      if (!manifest) return undefined;
       try {
-        const mod = await import(
-          /* webpackIgnore: true */
-          /* turbopackIgnore: true */
-          /* @vite-ignore */
-          ref.packageName
-        );
-        const input: unknown = mod.default;
-        if (
-          input instanceof Uint8Array ||
-          input instanceof ArrayBuffer ||
-          input instanceof URL ||
-          typeof input === "string"
-        ) {
-          const resolved = await runtime.resolveWasm(input);
-          if (resolved instanceof Uint8Array) return resolved;
-          const disk = await runtime.readResolvedWasmFromDisk(resolved);
-          if (disk) return disk;
-          const response = await fetch(resolved);
-          if (!response.ok) return undefined;
-          return new Uint8Array(await response.arrayBuffer());
-        }
-      } catch {}
-      return undefined;
+        return await runtime.readResolvedWasmFromDisk(new URL(`${ref.name}.wasm`, manifest));
+      } catch {
+        return undefined;
+      }
     }
 
     private async fetchResolvedWasm(language: string, ref: WasmRef): Promise<Uint8Array> {
-      // Verified here rather than by the caller: the store directory holds both
-      // staged and downloaded parsers, so a corrupt file found this way has to
-      // fall through to a refetch instead of failing the load. `cached_parser`
-      // in the Rust store discards such a file for the same reason.
-      const staged = await runtime.readStagedAsset?.(
-        `${ref.name}-${ref.version}-${ref.sha256}.wasm`,
-      );
-      if (staged) {
-        try {
-          return await verifyWasm(ref, staged);
-        } catch {}
-      }
-
-      const installed = await this.loadInstalledPackage(ref);
-      if (installed) return installed;
-
       const url = this.resolver(language, ref);
       const diskData = await runtime.readResolvedWasmFromDisk(url);
       if (diskData) return diskData;
-      // Keyed on the default resolver for the same reason the package path is:
-      // a caller that supplied a resolver said where parsers come from, and a
-      // remote one of their own must not be refused on this project's behalf.
-      if (this.resolver === DEFAULT_RESOLVER && !(await this.mayDownload(ref.packageName))) {
-        throw notDeclared(`${ref.name}@${ref.version}`, ref.packageName);
+      // Keyed on the default resolvers for the same reason the package path is:
+      // a caller that supplied either one said where parsers come from, and a
+      // remote source of their own must not be refused on this project's behalf.
+      if (!this.callerResolved) {
+        const what = `${ref.name}@${ref.version}`;
+        throw runtime.resolveInstalledManifest
+          ? notDeclared(what, ref.packageName)
+          : notImported(what, ref.packageName);
       }
       const href = typeof url === "string" ? url : url.href;
       const response = await fetchFromCdns(href, this.resolver === DEFAULT_RESOLVER).catch(
@@ -1299,6 +1266,23 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
     }
 
     private async loadWasmBytes(language: string, ref: WasmRef, key: string): Promise<Uint8Array> {
+      // Unless the caller supplied a WASM resolver, try the installed parser
+      // first. It is already on disk where the package manager put it, so there
+      // is nothing to cache and no download to serialize, and a data directory
+      // that cannot be written does not matter. A manifest from the caller's
+      // own package resolver can name different bytes; then the parser comes
+      // from wherever that manifest points.
+      if (this.resolver === DEFAULT_RESOLVER) {
+        const installed = await this.readInstalledParser(ref);
+        if (installed) {
+          try {
+            return await verifyWasm(ref, installed);
+          } catch (error) {
+            if (!this.callerResolved) throw error;
+          }
+        }
+      }
+
       const fsCached = await this.readVerifiedCache(ref, key);
       if (fsCached) return fsCached;
 
@@ -1344,7 +1328,11 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
         throw new Error(`Language "${opts.definition.id}" has no packageName`);
       }
 
-      const packaged = await this.resolveLanguagePackage(opts.definition, opts.packageName);
+      const packaged = await this.resolveLanguagePackage(
+        opts.definition,
+        opts.packageName,
+        opts.languagePackage,
+      );
       const resolved = { ...packaged, ...(opts.wasm === undefined ? {} : { wasm: opts.wasm }) };
       if (!resolved.wasm || resolved.highlights === undefined) {
         throw new Error(`Language package "${opts.packageName}" has no parser or highlights query`);
@@ -1402,8 +1390,11 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
     async resolveLanguagePackage(
       language: LanguageDefinition,
       packageName: string,
+      languagePackage?: object,
     ): Promise<ResolvedLanguagePackage> {
-      const packageMetadata = await this.resolvePackage(packageName);
+      const packageMetadata = languagePackage
+        ? this.importedPackage(languagePackage, packageName)
+        : await this.resolvePackage(packageName);
       const [id, packaged] = packagedLanguage(language, packageMetadata);
       return {
         definition: { id, aliases: packaged.aliases },
@@ -1543,8 +1534,8 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
     loadLanguage(opts) {
       return defaultRuntime.loadLanguage(opts);
     },
-    resolveLanguagePackage(language, packageName) {
-      return defaultRuntime.resolveLanguagePackage(language, packageName);
+    resolveLanguagePackage(language, packageName, manifest) {
+      return defaultRuntime.resolveLanguagePackage(language, packageName, manifest);
     },
     resolveParserWasm(language, wasm) {
       return defaultRuntime.resolveParserWasm(language, wasm);

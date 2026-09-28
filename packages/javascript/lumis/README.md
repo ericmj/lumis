@@ -13,22 +13,25 @@ JavaScript / TypeScript package for [Lumis](https://lumis.sh). Works in Node.js,
 - **Language auto-detection** - File extension, shebang, and emacs-mode support
 - **Line highlighting** - Mark and style individual lines, with custom HTML wrappers
 - **Streaming-friendly** - Handles incomplete code
-- **Load parsers on demand** - Verified and cached, including injected languages on Node; browsers load those up front
+- **Load parsers on demand** - From the packages you install or import, verified, including injected languages on Node; browsers load those up front
 
 ## Install
 
 ```sh
-npm install @lumis-sh/lumis
-npm install @lumis-sh/themes
+npm install @lumis-sh/lumis @lumis-sh/themes
+npm install @lumis-sh/wasm-javascript
 ```
+
+Each language is its own package. Install the ones you highlight, or a bundle
+such as `@lumis-sh/wasm-bundle-web`.
 
 ## Usage
 
 ```typescript
 import { highlight } from '@lumis-sh/lumis'
 import { htmlInline } from '@lumis-sh/lumis/formatters'
-import javascript from '@lumis-sh/lumis/langs/javascript'
 import dracula from '@lumis-sh/themes/dracula'
+import javascript from '@lumis-sh/wasm-javascript'
 
 const html: string = await highlight('const x = 1', htmlInline({ language: javascript, theme: dracula }))
 ```
@@ -44,21 +47,48 @@ const hl = await createHighlighter({ languages: [javascript] })
 const html = hl.highlight('const x = 1', htmlInline({ language: javascript, theme: dracula }))
 ```
 
-Bundles register a whole set at once — `bundles/web`, `web-extra`, `system`,
-`backend`, `full` — and each language in one still loads lazily on first use.
+A bundle package registers a whole set at once, and each language in it still
+loads lazily on first use:
+
+```typescript
+import web from '@lumis-sh/wasm-bundle-web'
+
+const hl = await createHighlighter({ languages: [web] })
+await hl.loadLanguage(web.typescript)
+```
+
+The bundles are `@lumis-sh/wasm-bundle-web`, `-web-extra`, `-system`,
+`-backend`, and `-full`.
 
 ## Parsers
 
-Each language import is a handle to an independently released parser package.
-Lumis resolves it to an exact version, verifies the bytes against a SHA-256
-digest before use, and caches them.
+Each parser is an independently released package, such as
+`@lumis-sh/wasm-javascript`, holding the parser, its queries, and its SHA-256
+digest. The package's default export is the language, so the same import works
+on Node, where Lumis reads the parser from `node_modules`, and in a browser,
+where your bundler ships it. A project loads nothing it didn't install or
+import unless you configure a resolver, and the bytes are checked against the
+digest before use.
+
+Packages are named after the parser, and a parser that serves more than one
+language exports each by name:
+
+```typescript
+import markdown, { mdx } from '@lumis-sh/wasm-markdown'
+import { ejs, erb } from '@lumis-sh/wasm-embedded-template'
+```
+
+Importing `markdown` also loads `markdown_inline`, the grammar it depends on.
+With Vite's dev server, list the parser packages in `optimizeDeps.exclude` so
+pre-bundling keeps each one next to its parser file.
 
 On Node, a document also loads the languages **injected inside** it during the
 same pass, so a Markdown file with a fenced Rust block highlights that block
 without Rust being named in your code. Browsers load asynchronously, so load
 injected languages up front, including those from a registered bundle.
 
-Warm parsers alongside startup, without putting the CDN on the boot path:
+On Node, warm parsers alongside startup, without putting the compile on the
+boot path:
 
 ```typescript
 import { loadLanguages } from '@lumis-sh/lumis'

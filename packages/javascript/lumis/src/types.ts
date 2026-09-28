@@ -146,29 +146,61 @@ export type RuntimeWasmInput = Uint8Array | ArrayBuffer | string | URL | Respons
 export type RuntimeWasmBundle = Partial<Record<string, RuntimeWasmInput>>;
 
 /**
- * A language accepted by Lumis.
- *
- * Queries live in the package alongside the parser they were tested against, so
- * this carries a package name rather than query text.
+ * A `@lumis-sh/wasm-*` package imported as a namespace. Its default export is
+ * the language; before `@lumis-sh/lumis` 0.9 it was the parser alone, with the
+ * language package beside it.
  *
  * ```ts
- * import javascript from '@lumis-sh/lumis/langs/javascript'
- * // javascript.id         → "javascript"
- * // javascript.aliases    → ["js", "jsx"]
+ * import * as elixirPackage from '@lumis-sh/wasm-elixir'
+ * ```
+ */
+export interface LanguagePackageExports {
+  readonly default: RuntimeWasmInput | Language;
+  readonly languagePackage?: object;
+}
+
+/**
+ * Imported packages by language id, for `withWasmBundle()`.
+ */
+export type RuntimeLanguagePackageBundle = Partial<Record<string, LanguagePackageExports>>;
+
+/**
+ * A language accepted by Lumis.
+ *
+ * A parser package exports its language, parser and queries included, and that
+ * works the same in Node and in a browser:
+ *
+ * ```ts
+ * import javascript from '@lumis-sh/wasm-javascript'
+ * // javascript.id          → "javascript"
+ * // javascript.aliases     → ["js", "jsx"]
  * // javascript.packageName → "@lumis-sh/wasm-javascript"
  * ```
+ *
+ * `@lumis-sh/lumis/langs/javascript` is the same language without the parser,
+ * which Node reads from the installed package.
  */
 export interface Language extends LanguageDefinition {
   /** Independently released package containing the parser and matching queries. */
   packageName?: string;
   /**
    * WASM parser source:
-   * - `WasmRef` fetched from CDN (default for pre-built bundles)
+   * - `WasmRef` resolved from the installed package, or a configured resolver
    * - `Uint8Array` or `ArrayBuffer` passed directly (useful with browser bundlers)
    * - `URL` fetched directly (`file://` works in Node.js)
    * - `string` treated as file path (Node.js) or URL (browser)
    */
   wasm?: WasmRef | RuntimeWasmInput;
+  /**
+   * The package's `lumis.json`, carried by a language a parser package
+   * exports. A browser needs it; Node can read the installed one.
+   */
+  languagePackage?: object;
+  /**
+   * Grammars this language cannot highlight without, loaded along with it,
+   * such as `markdown_inline` for `markdown`.
+   */
+  requires?: Language[];
 }
 
 /**
@@ -181,6 +213,8 @@ export interface LanguagePackageHandle extends LanguageDefinition {
   packageName: string;
   /** Optional caller-selected source for the package's verified parser bytes. */
   wasm?: WasmRef | RuntimeWasmInput;
+  /** The package's `lumis.json`, when the package was imported. */
+  languagePackage?: object;
 }
 
 export interface PlaintextLanguage extends LanguageDefinition {
@@ -204,10 +238,10 @@ export type LoadableLanguage = LanguagePackageHandle | PlaintextLanguage;
  * A lazy language handle from a bundle. Callable to load the full {@link Language}.
  *
  * ```ts
- * import { bundledLanguages } from '@lumis-sh/lumis/bundles/web'
+ * import web from '@lumis-sh/wasm-bundle-web'
  *
- * bundledLanguages.javascript.id  // "javascript"
- * const language = await bundledLanguages.javascript()  // loads the full Language
+ * web.javascript.id  // "javascript"
+ * const language = await web.javascript()  // loads the full Language
  * ```
  */
 export interface LazyLanguage {
@@ -217,14 +251,15 @@ export interface LazyLanguage {
 }
 
 /**
- * A collection of lazy language handles. Import a preset bundle:
+ * A collection of lazy language handles. A bundle package's default export is
+ * one:
  *
  * ```ts
- * import { bundledLanguages } from '@lumis-sh/lumis/bundles/web'
- * import { bundledLanguages } from '@lumis-sh/lumis/bundles/web-extra'
- * import { bundledLanguages } from '@lumis-sh/lumis/bundles/system'
- * import { bundledLanguages } from '@lumis-sh/lumis/bundles/backend'
- * import { bundledLanguages } from '@lumis-sh/lumis/bundles/full'
+ * import web from '@lumis-sh/wasm-bundle-web'
+ * import webExtra from '@lumis-sh/wasm-bundle-web-extra'
+ * import system from '@lumis-sh/wasm-bundle-system'
+ * import backend from '@lumis-sh/wasm-bundle-backend'
+ * import full from '@lumis-sh/wasm-bundle-full'
  * ```
  */
 export type LanguageBundle = Record<string, LazyLanguage>;
@@ -233,7 +268,7 @@ export type LanguageBundle = Record<string, LazyLanguage>;
  * What `createHighlighter({ languages })` accepts.
  *
  * - `Language` — loaded immediately
- * - `Promise<{ default: Language }>` — e.g. `import('@lumis-sh/lumis/langs/css')`
+ * - `Promise<{ default: Language }>` — e.g. `import('@lumis-sh/wasm-css')`
  * - `() => Promise<{ default: Language }>` — lazy, loaded when called
  * - `LanguageBundle` — registered lazily, loaded on first use
  */

@@ -1171,6 +1171,11 @@ struct ParserInfo {
     aliases: Vec<String>,
     #[allow(dead_code)]
     variant: Option<String>,
+    /// Grammars this language cannot highlight without, such as
+    /// `markdown_inline` for `markdown`. Its package depends on theirs and
+    /// its JavaScript entry loads them along with it.
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -3615,16 +3620,9 @@ fn stage_wasm(name: &str, version: Option<&str>) -> Result<()> {
         format!("{}\n", serde_json::to_string_pretty(&language_package)?),
     )?;
 
-    let browser_entry = render_template(
-        "templates/wasm/index.js.template",
-        &[("wasm_name", wasm_name)],
-    )?;
-    fs::write(format!("{out}/index.js"), browser_entry)?;
-
-    fs::copy(
-        "templates/wasm/index.d.ts.template",
-        format!("{out}/index.d.ts"),
-    )?;
+    let entry = package_entry(&toml, wasm_name, &language_package, &ts_cli_minor)?;
+    fs::write(format!("{out}/index.js"), &entry.js)?;
+    fs::write(format!("{out}/index.d.ts"), &entry.dts)?;
 
     let readme = render_template(
         "templates/wasm/README.md.template",
@@ -3639,6 +3637,8 @@ fn stage_wasm(name: &str, version: Option<&str>) -> Result<()> {
             ("npm_version", &npm_version),
             ("tree_sitter_cli_version", &ts_cli_version),
             ("tree_sitter_cli", &ts_cli_minor),
+            ("import_line", &entry.import_line),
+            ("first_language", &entry.first_language),
         ],
     )?;
     fs::write(format!("{out}/README.md"), readme)?;
@@ -3652,6 +3652,8 @@ fn stage_wasm(name: &str, version: Option<&str>) -> Result<()> {
             ("tree_sitter_cli", &ts_cli_minor),
             ("wasm_name", wasm_name),
             ("definition_hash", &definition_hash),
+            ("lumis_range", LUMIS_READS_PACKAGE_FORMAT),
+            ("dependencies", &serde_json::to_string(&entry.dependencies)?),
         ],
     )?;
     fs::write(format!("{out}/package.json"), pkg)?;
@@ -4220,7 +4222,190 @@ fn wasm_packages() -> Result<()> {
     Ok(())
 }
 
-const PACKAGE_FORMAT_VERSION: u32 = 3;
+/// The first `@lumis-sh/lumis` that reads the entry `PACKAGE_FORMAT_VERSION` 4
+/// generates. Parser packages name it as an optional peer, so a package manager
+/// flags an older Lumis at install rather than a browser failing at run time.
+const LUMIS_READS_PACKAGE_FORMAT: &str = ">=0.9.0";
+
+/// A parser package's JavaScript entry, its declarations, and what else it
+/// needs to say about them.
+struct PackageEntry {
+    js: String,
+    dts: String,
+    /// Packages of the grammars a language here requires, by version range.
+    dependencies: BTreeMap<String, String>,
+    /// How the README imports this package's languages.
+    import_line: String,
+    /// The name the README passes to `createHighlighter`.
+    first_language: String,
+}
+
+/// The packages holding the grammars this package's languages require, by
+/// version range, and which package each required language comes from.
+fn required_packages(
+    toml: &LanguagesToml,
+    package: &LanguagePackage,
+    ts_cli_minor: &str,
+) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>)> {
+    let mut dependencies = BTreeMap::new();
+    let mut required_ids = BTreeMap::new();
+    for id in package.languages.keys() {
+        for required in toml
+            .parsers
+            .get(id)
+            .map(|info| info.requires.as_slice())
+            .unwrap_or_default()
+        {
+            let info = toml.parsers.get(required).with_context(|| {
+                format!("{id} requires {required}, which languages.toml does not define")
+            })?;
+            let required_wasm = info
+                .wasm_name
+                .clone()
+                .unwrap_or_else(|| format!("tree-sitter-{required}"));
+            let required_package =
+                format!("@lumis-sh/wasm-{}", wasm_package_suffix(&required_wasm));
+            if required_package == package.package_name {
+                bail!("{id} requires {required}, which ships in the same package");
+            }
+            dependencies.insert(required_package.clone(), format!("^{ts_cli_minor}.0"));
+            required_ids.insert(required.clone(), required_package);
+        }
+    }
+    Ok((dependencies, required_ids))
+}
+
+/// One language as a named export: the object `createHighlighter` takes.
+fn language_export(
+    js: &mut String,
+    toml: &LanguagesToml,
+    package: &LanguagePackage,
+    id: &str,
+    aliases: &[String],
+) -> Result<()> {
+    use std::fmt::Write as _;
+
+    let requires = toml
+        .parsers
+        .get(id)
+        .map(|info| info.requires.clone())
+        .unwrap_or_default();
+    writeln!(js, "\nexport const {id} = {{")?;
+    writeln!(js, "  id: {},", serde_json::to_string(id)?)?;
+    writeln!(js, "  aliases: {},", serde_json::to_string(aliases)?)?;
+    writeln!(
+        js,
+        "  packageName: {},",
+        serde_json::to_string(&package.package_name)?
+    )?;
+    writeln!(js, "  wasm,")?;
+    writeln!(js, "  languagePackage,")?;
+    if !requires.is_empty() {
+        writeln!(js, "  requires: [{}],", requires.join(", "))?;
+    }
+    writeln!(js, "}}")?;
+    Ok(())
+}
+
+/// The default export, the one language named after the package or its only
+/// one, and the languages exported by name alone.
+fn split_default(wasm_name: &str, ids: &[String]) -> (Option<String>, Vec<String>) {
+    let suffix = wasm_package_suffix(wasm_name);
+    let default = if ids.len() == 1 {
+        Some(ids[0].clone())
+    } else {
+        ids.iter().find(|id| id.as_str() == suffix).cloned()
+    };
+    let named = ids
+        .iter()
+        .filter(|id| Some(*id) != default.as_ref())
+        .cloned()
+        .collect();
+    (default, named)
+}
+
+/// How the README imports this package's languages.
+fn readme_import_line(package_name: &str, default: Option<&str>, named: &[String]) -> String {
+    let package_name = format!("'{package_name}'");
+    match (default, named.is_empty()) {
+        (Some(default), true) => format!("import {default} from {package_name}"),
+        (Some(default), false) => format!(
+            "import {default}, {{ {} }} from {package_name}",
+            named.join(", ")
+        ),
+        (None, _) => format!("import {{ {} }} from {package_name}", named.join(", ")),
+    }
+}
+
+/// Every language in the package as a named export, and as the default the one
+/// the package is named after, or its only one. `@lumis-sh/wasm-cmake` default
+/// exports `cmake`; `@lumis-sh/wasm-embedded-template`, holding `ejs` and `erb`,
+/// has no default.
+///
+/// The language package is written after rendering: query text can hold
+/// anything, and a template placeholder check has no business reading it.
+fn package_entry(
+    toml: &LanguagesToml,
+    wasm_name: &str,
+    package: &LanguagePackage,
+    ts_cli_minor: &str,
+) -> Result<PackageEntry> {
+    use std::fmt::Write as _;
+
+    let (dependencies, required_ids) = required_packages(toml, package, ts_cli_minor)?;
+    let mut js = String::new();
+    for (required, required_package) in &required_ids {
+        writeln!(
+            js,
+            "import {{ {required} }} from {}",
+            serde_json::to_string(required_package)?
+        )?;
+    }
+    if !required_ids.is_empty() {
+        js.push('\n');
+    }
+    js.push_str(&render_template(
+        "templates/wasm/index.js.template",
+        &[("wasm_name", wasm_name)],
+    )?);
+    writeln!(
+        js,
+        "\nexport const languagePackage = {}",
+        serde_json::to_string_pretty(package)?
+    )?;
+
+    let mut dts = fs::read_to_string("templates/wasm/index.d.ts.template")?;
+    for (id, language) in &package.languages {
+        language_export(&mut js, toml, package, id, &language.aliases)?;
+        writeln!(dts, "export declare const {id}: Language")?;
+    }
+
+    let ids = package.languages.keys().cloned().collect::<Vec<_>>();
+    let (default, named) = split_default(wasm_name, &ids);
+    if let Some(default) = &default {
+        writeln!(js, "\nexport default {default}")?;
+        writeln!(dts, "export {{ {default} as default }}")?;
+    }
+
+    Ok(PackageEntry {
+        js,
+        dts,
+        dependencies,
+        import_line: readme_import_line(&package.package_name, default.as_deref(), &named),
+        first_language: default.unwrap_or_else(|| ids[0].clone()),
+    })
+}
+
+/// Bumped when a package's contents change in a way its definition hash does
+/// not see, so every parser is published again. 4: the JavaScript entry exports
+/// the language with its language package, so importing it is enough anywhere.
+const PACKAGE_FORMAT_VERSION: u32 = 4;
+
+/// The bundle counterpart of `PACKAGE_FORMAT_VERSION`, carried in a bundle's
+/// `package.json` as `lumis.bundleFormat`. 2: the default export is the bundle,
+/// each entry importing its language package, and `bundledWasms` is gone. Must match
+/// `BUNDLE_FORMAT_VERSION` in `packages/javascript/scripts/build-wasm-bundles.ts`.
+const BUNDLE_FORMAT_VERSION: u32 = 2;
 
 const REGISTRY_CONCURRENCY: usize = 16;
 
@@ -4622,7 +4807,13 @@ fn bundle_version_for_members(packument: &Value, members: &[String]) -> Option<S
     let versions = packument.get("versions")?.as_object()?;
     versions
         .iter()
-        .filter(|(_, manifest)| dependency_names(manifest) == members)
+        .filter(|(_, manifest)| {
+            dependency_names(manifest) == members
+                && manifest
+                    .pointer("/lumis/bundleFormat")
+                    .and_then(Value::as_u64)
+                    == Some(BUNDLE_FORMAT_VERSION.into())
+        })
         .map(|(version, _)| version.clone())
         .max_by_key(|version| patch_of(version, "0.1").unwrap_or(0))
 }
@@ -4926,17 +5117,14 @@ fn stage_hex_wasm(name: &str) -> Result<()> {
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
-    let mix = render_template(
-        "templates/wasm/mix.exs.template",
-        &[
-            ("module_name", &module_name),
-            ("app_name", &app_name),
-            ("hex_version", &package.version),
-            ("languages_text", &languages_text),
-            ("git_url", info.git.as_deref().unwrap_or("")),
-        ],
+    write_hex_mix(
+        &out,
+        &npm,
+        (&module_name, &app_name),
+        &package,
+        &languages_text,
+        info.git.as_deref().unwrap_or(""),
     )?;
-    fs::write(format!("{out}/mix.exs"), mix)?;
 
     // Its own README rather than npm's: that one is titled with the npm package
     // name and sends the reader to a CDN, neither of which helps someone
@@ -5010,7 +5198,7 @@ fn stage_hex_bundle(name: &str) -> Result<()> {
     let app_name = format!("lumis_wasm_bundle_{}", name.replace('-', "_"));
     let module_name = elixir_module_name(&app_name);
 
-    let members = hex_bundle_members(dependencies)?;
+    let members = hex_dependencies(dependencies)?;
 
     let deps = members
         .iter()
@@ -5078,7 +5266,9 @@ fn check_hex_description(manifest: &str, description: &str) -> Result<()> {
     Ok(())
 }
 
-/// The `lumis_wasm_*` dependencies meaning what the npm bundle's mean.
+/// The `lumis_wasm_*` dependencies meaning what an npm package's
+/// `@lumis-sh/wasm-*` ones mean: a bundle's members, or the grammars a parser
+/// package's languages require.
 ///
 /// Sorted, because the generated `mix.exs` is read by people and a JSON object's
 /// order is not something to inherit.
@@ -5086,7 +5276,7 @@ fn check_hex_description(manifest: &str, description: &str) -> Result<()> {
 /// # Errors
 /// Fails on a dependency that no parser package produces, or on a requirement
 /// [`hex_requirement`] cannot translate.
-fn hex_bundle_members(
+fn hex_dependencies(
     dependencies: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<(String, String)>> {
     let mut members = Vec::new();
@@ -5104,6 +5294,57 @@ fn hex_bundle_members(
     }
     members.sort();
     Ok(members)
+}
+
+/// A parser package's `mix.exs`, depending on what its npm counterpart does.
+fn write_hex_mix(
+    out: &str,
+    npm: &str,
+    (module_name, app_name): (&str, &str),
+    package: &LanguagePackage,
+    languages_text: &str,
+    git_url: &str,
+) -> Result<()> {
+    let mix = render_template(
+        "templates/wasm/mix.exs.template",
+        &[
+            ("module_name", module_name),
+            ("app_name", app_name),
+            ("hex_version", &package.version),
+            ("languages_text", languages_text),
+            ("git_url", git_url),
+            ("deps", &staged_mix_deps(npm)?),
+        ],
+    )?;
+    fs::write(format!("{out}/mix.exs"), mix)?;
+    Ok(())
+}
+
+/// The Hex dependencies of the parser package staged for npm in `npm`: the
+/// grammars its languages require, read off the same `package.json`, so both
+/// registries bring the same companions.
+fn staged_mix_deps(npm: &str) -> Result<String> {
+    let package: serde_json::Value =
+        serde_json::from_slice(&fs::read(format!("{npm}/package.json"))?)?;
+    let dependencies = package
+        .get("dependencies")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    Ok(mix_deps(&hex_dependencies(&dependencies)?))
+}
+
+/// The inside of a parser package's `deps` list: nothing when it needs nothing.
+fn mix_deps(dependencies: &[(String, String)]) -> String {
+    if dependencies.is_empty() {
+        return String::new();
+    }
+    let lines = dependencies
+        .iter()
+        .map(|(app, requirement)| format!("      {{:{app}, \"{requirement}\"}}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("\n{lines}\n    ")
 }
 
 /// The Hex requirement meaning what an npm one means.
@@ -5304,7 +5545,13 @@ mod hex_wasm_tests {
                     .iter()
                     .map(|m| ((*m).to_string(), json!("^0.26.0")))
                     .collect::<serde_json::Map<_, _>>();
-                ((*version).to_string(), json!({ "dependencies": deps }))
+                (
+                    (*version).to_string(),
+                    json!({
+                        "dependencies": deps,
+                        "lumis": { "bundleFormat": BUNDLE_FORMAT_VERSION },
+                    }),
+                )
             })
             .collect::<serde_json::Map<_, _>>();
         json!({ "versions": published })
@@ -5328,6 +5575,20 @@ mod hex_wasm_tests {
             bundle_version_for_members(&published, &members).as_deref(),
             Some("0.1.1")
         );
+    }
+
+    /// Same members, older contents: a bundle published before `bundleFormat`
+    /// exports parser URLs rather than languages, so it must not count as this one.
+    #[test]
+    fn a_bundle_from_an_older_format_takes_a_new_version() {
+        let members = vec!["@lumis-sh/wasm-c".to_string()];
+        let published = json!({
+            "versions": {
+                "0.1.3": { "dependencies": { "@lumis-sh/wasm-c": "^0.26.0" } },
+            },
+        });
+
+        assert_eq!(bundle_version_for_members(&published, &members), None);
     }
 
     /// The case that shipped: `systemverilog` left `bundle-full` and nothing
@@ -6257,7 +6518,7 @@ mod tests {
         serde_json::json!({
             "definitionHash": hash,
             "treeSitter": "0.26",
-            "formatVersion": 3,
+            "formatVersion": PACKAGE_FORMAT_VERSION,
         })
     }
 
@@ -6764,6 +7025,70 @@ mod tests {
         assert_eq!(tree_sitter_series("v0.26.11").unwrap(), "0.26");
         assert!(tree_sitter_series("latest").is_err());
         assert!(tree_sitter_series("not-a-version-0.26").is_err());
+    }
+
+    // A split grammar is a dependency on both registries. Otherwise an Elixir
+    // project that installs markdown renders its inline code plain, and a Node
+    // one doesn't.
+    #[test]
+    fn a_required_grammar_is_a_dependency_on_npm_and_hex() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../languages.toml");
+        let text = fs::read_to_string(&path).expect("languages.toml should be readable");
+        let toml: LanguagesToml = toml::from_str(&text).expect("languages.toml should parse");
+        let wasm_name = |id: &str| {
+            toml.parsers[id]
+                .wasm_name
+                .clone()
+                .unwrap_or_else(|| format!("tree-sitter-{id}"))
+        };
+
+        let requiring = toml
+            .parsers
+            .iter()
+            .filter(|(_, info)| !info.requires.is_empty())
+            .collect::<Vec<_>>();
+        assert!(
+            requiring.len() >= 3,
+            "markdown, mdx and jinja each require an inline grammar"
+        );
+
+        for (id, info) in requiring {
+            let package = LanguagePackage {
+                package_name: format!("@lumis-sh/wasm-{}", wasm_package_suffix(&wasm_name(id))),
+                version: "0.26.0".into(),
+                definition_hash: String::new(),
+                parser: ParserMetadata {
+                    name: wasm_name(id),
+                    grammar_name: id.clone(),
+                    upstream_version: None,
+                    revision: None,
+                    sha256: String::new(),
+                    size: 0,
+                },
+                languages: BTreeMap::from([(id.clone(), PackagedLanguage::default())]),
+            };
+            let (npm, _) =
+                required_packages(&toml, &package, "0.26").expect("requires should resolve");
+            let npm = npm
+                .into_iter()
+                .map(|(name, range)| (name, Value::String(range)))
+                .collect::<serde_json::Map<_, _>>();
+            let hex = hex_dependencies(&npm).expect("npm requirements should translate");
+
+            let mut expected = info
+                .requires
+                .iter()
+                .map(|required| (hex_app_name(&wasm_name(required)), "~> 0.26.0".to_string()))
+                .collect::<Vec<_>>();
+            expected.sort();
+            assert_eq!(hex, expected, "{id}");
+        }
+
+        assert_eq!(
+            mix_deps(&[("lumis_wasm_markdown_inline".into(), "~> 0.26.0".into())]),
+            "\n      {:lumis_wasm_markdown_inline, \"~> 0.26.0\"}\n    "
+        );
+        assert_eq!(mix_deps(&[]), "", "a package needing nothing renders `[]`");
     }
 
     // Bundle membership is a cross-runtime promise: `@lumis-sh/wasm-bundle-web` and

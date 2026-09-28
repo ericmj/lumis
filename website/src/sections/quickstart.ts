@@ -35,13 +35,16 @@ let html = highlight("const x = 1", formatter);`,
   {
     id: "javascript",
     label: "JavaScript / TypeScript",
-    install: { language: "bash", code: `npm install @lumis-sh/lumis @lumis-sh/themes` },
+    install: {
+      language: "bash",
+      code: `npm install @lumis-sh/lumis @lumis-sh/themes @lumis-sh/wasm-javascript`,
+    },
     usage: {
       language: "javascript",
       code: `import { highlight } from '@lumis-sh/lumis'
 import { htmlInline } from '@lumis-sh/lumis/formatters'
-import javascript from '@lumis-sh/lumis/langs/javascript'
 import dracula from '@lumis-sh/themes/dracula'
+import javascript from '@lumis-sh/wasm-javascript'
 
 const html = await highlight(
   'const x = 1',
@@ -57,8 +60,8 @@ const html = await highlight(
       language: "javascript",
       code: `import { highlight } from 'https://esm.sh/@lumis-sh/lumis'
 import { htmlInline } from 'https://esm.sh/@lumis-sh/lumis/formatters'
-import javascript from 'https://esm.sh/@lumis-sh/lumis/langs/javascript'
 import dracula from 'https://esm.sh/@lumis-sh/themes/dracula'
+import javascript from 'https://esm.sh/@lumis-sh/wasm-javascript'
 
 document.getElementById('output').innerHTML = await highlight(
   'const x = 1',

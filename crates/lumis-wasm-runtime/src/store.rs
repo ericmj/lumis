@@ -1,6 +1,7 @@
 //! Resolve, verify and cache language packages and parser WASM on disk.
 //!
-//! Shared by the CLI, the Elixir NIF, and the Node addon.
+//! Shared by the CLI and the Elixir NIF. The Node addon loads the packages a
+//! project installed instead, which only Node's module resolution can find.
 //!
 //! There is deliberately no file lock. Writes rename a uniquely named temporary
 //! into place and parser bytes are verified first, so concurrent writers converge
@@ -193,8 +194,8 @@ pub trait Fetcher: Send + Sync {
 
 /// The default [`Fetcher`]: an HTTP client.
 ///
-/// Lives here rather than in each host so the CLI, the Elixir NIF and the Node
-/// addon download, verify and cache through exactly the same code.
+/// Lives here rather than in each host so every host that downloads does it
+/// through exactly the same code.
 #[cfg(feature = "wasm")]
 pub struct HttpFetcher;
 
@@ -877,7 +878,14 @@ pub fn lowest_compatible_package_version() -> String {
     .to_string()
 }
 
-fn require_compatible_package_version(package: &LanguagePackage) -> Result<(), StoreError> {
+/// Refuse a package outside the version range this build supports.
+///
+/// Public for a host that reads packages the store does not, such as the Node
+/// addon reading `node_modules`, so every runtime refuses the same versions.
+///
+/// # Errors
+/// Fails when the version does not parse or is outside the range.
+pub fn require_compatible_package_version(package: &LanguagePackage) -> Result<(), StoreError> {
     let required = crate::catalog::LANGUAGE_PACKAGE_VERSION_RANGE;
     let requirement = requirement();
     let version =

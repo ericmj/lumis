@@ -732,9 +732,12 @@ package rather than checked in.
 Runtime catalogs generated from `languages.toml` contain stable IDs, aliases,
 and package names. They also contain one compatible npm range derived from the
 Tree-sitter series in `mise.toml`; they do not pin every package independently.
-JavaScript, CLI, and Elixir ask the CDN to resolve that range, validate and cache
-the exact `lumis.json` returned, then fetch the exact versioned parser named by
-that metadata and verify its bytes. Parser or query updates within the supported
+The CLI asks the CDN to resolve that range, validates and caches the exact
+`lumis.json` returned, then fetches the exact versioned parser named by that
+metadata and verifies its bytes. Node and Elixir load the packages a project
+installed, a browser loads the packages an application imported, and all three
+refuse one outside the range. A configured JavaScript resolver is the only other
+way a parser is fetched. Parser or query updates within the supported
 series therefore publish only the affected language package, without a runtime
 release.
 
@@ -743,9 +746,10 @@ revalidates it. Use the runtime's forced cache command to resolve the range
 again. Changing the Tree-sitter minor series changes the compatibility range
 and does require runtime releases.
 
-CLI, Node and Elixir caches persist on disk under `LUMIS_DATA_DIR`, in the same
-layout, so one prepared directory serves all three; browsers use CacheStorage
-with an IndexedDB fallback. Local and benchmark execution should provide both
+The CLI's cache persists on disk under `LUMIS_DATA_DIR`. Elixir and Node load
+the parser packages a project installed and keep only compiled modules there;
+browsers keep parsers a resolver fetched in CacheStorage, with an IndexedDB
+fallback. Local and benchmark execution should provide both
 `lumis.json` and its matching parser so queries and parser bytes remain
 atomic.
 
@@ -764,12 +768,15 @@ revision bump is validated before it is published rather than after.
   that copy and then to the published package.
 - **Conformance CI** builds the seventeen parsers the committed fixtures supply,
   stages them with `wasm-stage`, and points `LUMIS_DATA_DIR` at the result, so
-  the CLI, Elixir and Node native suites render from parsers built in that run.
+  the CLI and Elixir suites render from parsers built in that run. The Node
+  native suite loads the parser packages the workspace installed, as a Node
+  project does.
 - **JavaScript CI** runs the direct-addon store tests in their own process against
   a seeded copy of that store, then runs the remaining native-selected tests
   against an empty one before running the full Wasm-selected suite. The split is
-  intentional: a parser already in the store takes precedence over configured
-  JavaScript resolvers, so one process cannot honestly prove both paths.
+  intentional: parser bytes already in the store, matched by digest, are used
+  before a configured JavaScript resolver is asked, so one process cannot
+  honestly prove both paths.
 
 That parser set comes from the fixture filenames, not from the languages named
 in the fixtures' expected events. A document can attempt a language that never
