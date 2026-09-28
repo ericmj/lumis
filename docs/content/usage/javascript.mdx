@@ -222,7 +222,7 @@ include that language in `createHighlighter({languages: [...]})` or call
 
 In a browser, one-pass loading does not happen: loading is asynchronous there
 and cannot run inside a synchronous walk, so load every participating language
-yourself, or use a bundle such as `@lumis-sh/wasm-bundle-web`:
+yourself:
 
 ```ts
 const hl = await createHighlighter({
@@ -234,6 +234,10 @@ const htmlOutput = hl.highlight(
   htmlInline({ language: html, theme: frappe }),
 );
 ```
+
+Languages from a bundle, including one with parser bytes from
+`@lumis-sh/wasm-bundle-web`, are registered but not loaded. Call
+`hl.loadLanguage()` for each one the document uses before highlighting it.
 
 See [Highlighting loads what a document needs](/advanced/wasm-and-cdn#highlighting-loads-what-a-document-needs).
 
