@@ -84,27 +84,32 @@ function fromEmacsModeHeader(source: string): string | undefined {
 }
 
 function normalizeShebangCommand(command: string): string {
-  const normalized = basename(normalize(command));
+  const normalized = basename(command).toLowerCase();
   return normalized.replace(/\d+(?:\.\d+)*$/, "");
 }
 
+// Ports `from_shebang`: nothing may precede `#!`, not even whitespace, and
+// spaces and tabs separate it, `env` and the interpreter, as the kernel reads them.
 function fromShebang(source: string): string | undefined {
-  const firstLine = source.split(/\r?\n/, 1)[0]?.trim();
-  if (!firstLine?.startsWith("#!")) return undefined;
-
-  const match = firstLine.match(/^#!\s*(?:\/usr\/bin\/env\s+)?([^ ]+)/);
-  const command = match?.[1];
+  const firstLine = (source.split("\n", 1)[0] ?? "").replace(/\r$/, "");
+  const command = firstLine.match(/^#![ \t]*(?:\/usr\/bin\/env[ \t]+)?([^ \t]+)/)?.[1];
 
   if (!command) return undefined;
   return SHEBANG_MAP[normalizeShebangCommand(command)];
 }
 
+// Rust's `str::trim_start` strips the Unicode `White_Space` property, so U+0085
+// goes and a byte order mark stays, the reverse of `String#trimStart`.
+function trimStartWhiteSpace(source: string): string {
+  return source.replace(/^\p{White_Space}+/u, "");
+}
+
 function looksLikeHtml(source: string): boolean {
-  return source.trimStart().toLowerCase().startsWith("<!doctype html");
+  return trimStartWhiteSpace(source).toLowerCase().startsWith("<!doctype html");
 }
 
 function looksLikeXml(source: string): boolean {
-  return source.trimStart().toLowerCase().startsWith("<?xml");
+  return trimStartWhiteSpace(source).toLowerCase().startsWith("<?xml");
 }
 
 function looksLikeObjc(language: string | undefined, source: string): boolean {
@@ -131,15 +136,18 @@ export function guessLanguage(language?: string, source = ""): string {
   const explicit = parseLanguageHint(language);
   if (explicit) return explicit;
 
-  const emacsMode = fromEmacsModeHeader(source);
+  // A byte order mark is encoding, not content, as in `Language::guess`.
+  const content = source.startsWith("\uFEFF") ? source.slice(1) : source;
+
+  const emacsMode = fromEmacsModeHeader(content);
   if (emacsMode) return emacsMode;
 
-  const shebang = fromShebang(source);
+  const shebang = fromShebang(content);
   if (shebang) return shebang;
 
-  if (looksLikeHtml(source)) return "html";
-  if (looksLikeXml(source)) return "xml";
-  if (looksLikeObjc(language, source)) return "objc";
+  if (looksLikeHtml(content)) return "html";
+  if (looksLikeXml(content)) return "xml";
+  if (looksLikeObjc(language, content)) return "objc";
 
   return PLAINTEXT_LANG_ID;
 }
