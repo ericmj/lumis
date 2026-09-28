@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/index.ts",
+    "src/index.browser.ts",
+    "src/formatters.ts",
+    "src/formatter/html.ts",
+    "src/formatter/ansi.ts",
+    "langs/**/*.ts",
+    "bundles/**/*.ts",
+    "test/public-api-types.ts"
+  ]
+}
