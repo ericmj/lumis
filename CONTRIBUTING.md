@@ -804,17 +804,18 @@ The `wasm-release` workflow publishes to npm and Hex:
    **publish-npm** and **publish-hex** publish that artifact, in parallel, to
    whichever registries need it. A parser that fails stops its own pipeline;
    every other parser still publishes.
-3. **publish-hex-bundles** — one job per bundle Hex is missing, after every
-   parser pipeline, because a bundle depends on every language it groups.
+3. **bundles-ready**, then **publish-npm-bundles** and **publish-hex-bundles**
+   in parallel — one job per bundle a registry is missing, once every parser
+   pipeline has finished. A bundle depends on every language it groups, so it
+   waits for its own members: one whose member failed to publish is held back
+   until the next run, and the others publish.
 
 So two parsers missing from both registries is two pipelines of one build and
 two publish jobs each, and neither registry is ever published from a build the
 other did not get.
 
 Running it publishes everything pending. There is nothing to opt into: a package
-already on a registry at its resolved version is simply not in the plan. Bundles
-on npm are the exception, released by tag through `javascript-release` alongside
-the other JavaScript packages.
+already on a registry at its resolved version is simply not in the plan.
 
 **The version comes from the definition, not a counter.** A definition already
 published keeps the version it went out under, so a registry that is behind
