@@ -60,7 +60,6 @@ function packageDataUrl(
       ...(options.parserBytes
         ? {
             sha256: createHash("sha256").update(options.parserBytes).digest("hex"),
-            size: options.parserBytes.byteLength,
           }
         : {}),
     },
@@ -233,14 +232,14 @@ describe("runtime parity", () => {
       }
       if (index.runtimeKind() === "wasm") {
         expect(load.mock.calls.length - loadsBefore).toBe(0);
-        expect(moduleExports.mock.calls.length - exportsBefore).toBe(1);
+        expect(moduleExports.mock.calls.length - exportsBefore).toBe(0);
       }
 
       const corrected = await create("wrong-grammar-first", "@test/corrected-grammar", "comment");
       expect(corrected.languages).toContain("wrong-grammar-first");
       if (index.runtimeKind() === "wasm") {
         expect(load.mock.calls.length - loadsBefore).toBe(1);
-        expect(moduleExports.mock.calls.length - exportsBefore).toBe(1);
+        expect(moduleExports.mock.calls.length - exportsBefore).toBe(0);
       }
     } finally {
       load.mockRestore();
@@ -502,14 +501,14 @@ describe("runtime parity", () => {
     }
   }, 30_000);
 
-  it("rejects explicit parser bytes that do not match their package", async () => {
+  it("rejects explicit parser bytes for another grammar", async () => {
     const { default: json } = await import("../langs/json.ts");
 
     await expect(
       index.createHighlighter({
         languages: [{ ...json, wasm: ensureLocalWasm("markdown") }],
       }),
-    ).rejects.toThrow(/Invalid WASM (?:size|integrity)/);
+    ).rejects.toThrow(/parser grammar/);
   }, 30_000);
 
   /** An unavailable injection costs one block and is reported to the caller. */

@@ -50,14 +50,12 @@ export interface PackagedLanguage {
 export interface LanguagePackage {
   packageName: string;
   version: string;
-  definitionHash: string;
   parser: {
     name: string;
     grammarName: string;
     upstreamVersion?: string;
     revision?: string;
     sha256: string;
-    size: number;
   };
   languages: Record<string, PackagedLanguage>;
 }
@@ -144,7 +142,7 @@ export interface RuntimeLike {
     packageName: string,
     languagePackage?: object,
   ): Promise<ResolvedLanguagePackage>;
-  /** Parser bytes for `wasm`, resolved through this runtime's resolver, verified and cached. */
+  /** Parser bytes for `wasm`, resolved through this runtime's resolver and cached. */
   resolveParserWasm(language: string, wasm: WasmRef): Promise<Uint8Array>;
   loadPlaintext(): Promise<LoadedLanguage>;
   highlightEvents(
@@ -258,8 +256,6 @@ async function fetchFromCdns(primary: string, isDefault: boolean): Promise<Respo
 
 const HIGHLIGHT_NAMES_SET = new Set(HIGHLIGHT_NAMES);
 const PLAINTEXT_ALIASES = LANGUAGES.find(({ id }) => id === PLAINTEXT_LANG_ID)?.aliases ?? [];
-const MAX_JSON_CONTAINER_DEPTH = 127;
-const JSON_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -279,13 +275,7 @@ export function cacheKey(ref: WasmRef): string {
 }
 
 function isWasmRef(wasm: object): wasm is WasmRef {
-  return (
-    "packageName" in wasm &&
-    "name" in wasm &&
-    "version" in wasm &&
-    "sha256" in wasm &&
-    "size" in wasm
-  );
+  return "packageName" in wasm && "name" in wasm && "version" in wasm && "sha256" in wasm;
 }
 
 function isRuntimeWasmInput(
@@ -298,14 +288,7 @@ export function parseLanguagePackage(
   data: Uint8Array,
   expectedPackageName: string,
 ): LanguagePackage {
-  const json = decoder.decode(data);
-  if (!hasValidRawJsonProfile(json)) {
-    throw new Error(`Invalid Lumis language package: ${expectedPackageName}`);
-  }
-  const parsed: unknown = JSON.parse(json);
-  if (!hasOnlyUnicodeScalarStrings(parsed)) {
-    throw new Error(`Invalid Lumis language package: ${expectedPackageName}`);
-  }
+  const parsed: unknown = JSON.parse(decoder.decode(data));
   const value = parseLanguagePackageValue(parsed, expectedPackageName);
   const owners = new Map<string, string>();
   for (const [id, language] of Object.entries(value.languages)) {
@@ -375,15 +358,10 @@ function parseLanguagePackageValue(value: unknown, expectedPackageName: string):
   const packageValue = requireObject(value, expectedPackageName);
   const packageName = requireString(property(packageValue, "packageName"), expectedPackageName);
   const version = requireString(property(packageValue, "version"), expectedPackageName);
-  const definitionHash = requireString(
-    property(packageValue, "definitionHash"),
-    expectedPackageName,
-  );
   const parserValue = requireObject(property(packageValue, "parser"), expectedPackageName);
   const parserName = requireString(property(parserValue, "name"), expectedPackageName);
   const grammarName = requireString(property(parserValue, "grammarName"), expectedPackageName);
   const parserSha256 = requireString(property(parserValue, "sha256"), expectedPackageName);
-  const size = property(parserValue, "size");
   const languagesValue = requireObject(property(packageValue, "languages"), expectedPackageName);
 
   if (
@@ -391,13 +369,10 @@ function parseLanguagePackageValue(value: unknown, expectedPackageName: string):
       packageName,
       expectedPackageName,
       version,
-      definitionHash,
       parserName,
       grammarName,
       parserSha256,
-      size,
-    }) ||
-    !isPositiveSafeInteger(size)
+    })
   ) {
     return invalidLanguagePackage(expectedPackageName);
   }
@@ -411,7 +386,6 @@ function parseLanguagePackageValue(value: unknown, expectedPackageName: string):
   return {
     packageName,
     version,
-    definitionHash,
     parser: {
       name: parserName,
       grammarName,
@@ -421,7 +395,6 @@ function parseLanguagePackageValue(value: unknown, expectedPackageName: string):
       ),
       revision: optionalNullableString(property(parserValue, "revision"), expectedPackageName),
       sha256: parserSha256,
-      size,
     },
     languages,
   };
@@ -432,123 +405,18 @@ function isValidPackageManifest(fields: {
   packageName: string;
   expectedPackageName: string;
   version: string;
-  definitionHash: string;
   parserName: string;
   grammarName: string;
   parserSha256: string;
-  size: unknown;
 }): boolean {
   return (
     fields.packageName === fields.expectedPackageName &&
     isValidPackageName(fields.expectedPackageName) &&
     isSafePackagePathSegment(fields.version) &&
-    fields.definitionHash.length > 0 &&
     isSafePackagePathSegment(fields.parserName) &&
     fields.grammarName.length > 0 &&
-    /^[0-9a-f]{64}$/.test(fields.parserSha256) &&
-    isPositiveSafeInteger(fields.size)
+    /^[0-9a-f]{64}$/.test(fields.parserSha256)
   );
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-// Every surrogate has to be half of a pair; a lone one is not a scalar value.
-function isUnicodeScalarString(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const unit = value.charCodeAt(index);
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// JSON.parse discards overwritten members and turns 1e400 into Infinity, so
-// validate raw tokens before it collapses the document.
-function hasValidRawJsonProfile(json: string): boolean {
-  let depth = 0;
-  let index = 0;
-  while (index < json.length) {
-    const character = json[index]!;
-
-    if (character === '"') {
-      const end = scanJsonString(json, index);
-      if (end < 0) return false;
-      index = end;
-      continue;
-    }
-
-    if (isJsonNumberStart(character)) {
-      const end = scanJsonNumber(json, index);
-      if (end < 0) return false;
-      if (end > index) {
-        index = end;
-        continue;
-      }
-    } else {
-      depth += containerDepthDelta(character);
-      if (depth > MAX_JSON_CONTAINER_DEPTH) return false;
-    }
-
-    index += 1;
-  }
-  return true;
-}
-
-function isJsonNumberStart(character: string): boolean {
-  return character === "-" || (character >= "0" && character <= "9");
-}
-
-function containerDepthDelta(character: string): number {
-  if (character === "{" || character === "[") return 1;
-  if (character === "}" || character === "]") return -1;
-  return 0;
-}
-
-// The index just past the string literal at `start`, or -1 when it is
-// unterminated or carries a lone surrogate.
-function scanJsonString(json: string, start: number): number {
-  let end = start + 1;
-  while (end < json.length && json[end] !== '"') {
-    end += json[end] === "\\" ? 2 : 1;
-  }
-  if (end >= json.length) return -1;
-
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(json.slice(start, end + 1));
-  } catch {
-    return -1;
-  }
-
-  return hasOnlyUnicodeScalarStrings(decoded) ? end + 1 : -1;
-}
-
-// The index just past the number at `start`, `start` itself when no number
-// begins there, or -1 when the number does not survive as a finite value.
-function scanJsonNumber(json: string, start: number): number {
-  JSON_NUMBER.lastIndex = start;
-  const number = JSON_NUMBER.exec(json);
-  if (number === null) return start;
-
-  return Number.isFinite(Number(number[0])) ? JSON_NUMBER.lastIndex : -1;
-}
-
-function hasOnlyUnicodeScalarStrings(value: unknown): boolean {
-  if (typeof value === "string") return isUnicodeScalarString(value);
-  if (Array.isArray(value)) return value.every((entry) => hasOnlyUnicodeScalarStrings(entry));
-  if (typeof value === "object" && value !== null) {
-    return Object.entries(value).every(
-      ([key, child]) => hasOnlyUnicodeScalarStrings(key) && hasOnlyUnicodeScalarStrings(child),
-    );
-  }
-  return true;
 }
 
 function isValidPackageName(value: string): boolean {
@@ -676,28 +544,94 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 
 type ParserGrammar = { ok: true; name: string } | { ok: false; detail: string };
 
+/** Parser bytes and the digest that identifies them. */
+interface ParserBytes {
+  bytes: Uint8Array;
+  digest: string;
+}
+
+/**
+ * Bytes handed over directly are used as they are, so only their own digest
+ * can say which parser they are.
+ */
+async function handedParser(bytes: Uint8Array): Promise<ParserBytes> {
+  return { bytes, digest: await sha256Hex(bytes) };
+}
+
 interface CachedParserModule {
   grammar?: ParserGrammar;
   language?: Promise<Language>;
 }
 
+/** The first four bytes of every WebAssembly module: `\0asm`. */
+const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+const EXPORT_SECTION = 7;
+const FUNCTION_EXPORT = 0;
+
+/** Reads a WebAssembly binary front to back, and throws rather than read past its end. */
+function wasmReader(bytes: Uint8Array) {
+  let offset = 0;
+  const take = (length: number): Uint8Array => {
+    if (offset + length > bytes.length) throw new RangeError("truncated WebAssembly module");
+    offset += length;
+    return bytes.subarray(offset - length, offset);
+  };
+  const byte = (): number => take(1)[0]!;
+  const u32 = (): number => {
+    let value = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      const next = byte();
+      value += (next & 0x7f) * 2 ** shift;
+      if (next < 0x80) return value;
+    }
+    throw new RangeError("malformed WebAssembly integer");
+  };
+  return { take, byte, u32, done: () => offset >= bytes.length };
+}
+
+/**
+ * The functions a WebAssembly module exports, read from its export section.
+ *
+ * `WebAssembly.Module.exports` needs the module compiled, which would do
+ * web-tree-sitter's work a second time, and Chrome refuses a synchronous
+ * compile over 8 MB on the main thread, which the largest parsers are.
+ *
+ * @internal
+ */
+export function exportedFunctionNames(bytes: Uint8Array): string[] {
+  const module = wasmReader(bytes);
+  if (!WASM_MAGIC.every((expected) => module.byte() === expected)) {
+    throw new TypeError("not a WebAssembly module");
+  }
+  module.take(4); // The version.
+  while (!module.done()) {
+    const id = module.byte();
+    const section = wasmReader(module.take(module.u32()));
+    if (id === EXPORT_SECTION) return functionExports(section);
+  }
+  return [];
+}
+
+function functionExports(section: ReturnType<typeof wasmReader>): string[] {
+  const names: string[] = [];
+  for (let count = section.u32(); count > 0; count -= 1) {
+    const name = decoder.decode(section.take(section.u32()));
+    const kind = section.byte();
+    section.u32();
+    if (kind === FUNCTION_EXPORT) names.push(name);
+  }
+  return names;
+}
+
 function inspectParserGrammar(data: Uint8Array): ParserGrammar {
-  let module: WebAssembly.Module;
+  let exports: string[];
   try {
-    const bytes =
-      data.buffer instanceof ArrayBuffer &&
-      data.byteOffset === 0 &&
-      data.byteLength === data.buffer.byteLength
-        ? data.buffer
-        : data.slice().buffer;
-    module = new WebAssembly.Module(bytes);
+    exports = exportedFunctionNames(data);
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
 
-  const names = WebAssembly.Module.exports(module)
-    .filter(({ kind }) => kind === "function")
-    .map(({ name }) => name)
+  const names = exports
     .filter((name) => name.startsWith("tree_sitter_"))
     .map((name) => name.slice("tree_sitter_".length))
     .filter((name) => !name.startsWith("external_scanner_"));
@@ -705,9 +639,6 @@ function inspectParserGrammar(data: Uint8Array): ParserGrammar {
     ? { ok: true, name: names[0]! }
     : { ok: false, detail: `expected one grammar export, got ${names.length}` };
 }
-
-/** The first four bytes of every WebAssembly module: `\0asm`. */
-const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
 
 async function downloadParserWasm(
   source: string,
@@ -772,13 +703,14 @@ function requireParserGrammar(
   }
 }
 
-/** @internal */
+/**
+ * Checks parser bytes Lumis downloaded against the digest their package
+ * declares. An installed package's parser came through a package manager with
+ * its `lumis.json`, and bytes handed over directly are the caller's.
+ *
+ * @internal
+ */
 export async function verifyWasm(ref: WasmRef, data: Uint8Array): Promise<Uint8Array> {
-  if (data.byteLength !== ref.size) {
-    throw new Error(
-      `Invalid WASM size for ${ref.name}@${ref.version}: expected ${ref.size}, got ${data.byteLength}`,
-    );
-  }
   const actual = await sha256Hex(data);
   if (actual !== ref.sha256) {
     throw new Error(
@@ -1099,18 +1031,17 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
   // store.
   async function loadParserLanguage(
     Language: Awaited<ReturnType<typeof loadTreeSitter>>["Language"],
-    wasmInput: Uint8Array,
+    parser: ParserBytes,
     packaged: { wasm: WasmRef; grammarName: string },
   ) {
-    const parserKey = packaged.wasm.sha256;
-    let parserModule = parserModules.get(parserKey);
+    let parserModule = parserModules.get(parser.digest);
     if (!parserModule) {
       parserModule = {};
-      parserModules.set(parserKey, parserModule);
+      parserModules.set(parser.digest, parserModule);
     }
 
-    requireParserGrammar(parserModule, wasmInput, packaged.wasm, packaged.grammarName);
-    parserModule.language ??= Language.load(wasmInput);
+    requireParserGrammar(parserModule, parser.bytes, packaged.wasm, packaged.grammarName);
+    parserModule.language ??= Language.load(parser.bytes);
     return parserModule.language;
   }
 
@@ -1266,13 +1197,21 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
 
     /**
      * The parser beside the manifest a project installed, which is what the
-     * native addon reads. An `import()` from here would resolve from Lumis's own
-     * directory, and under pnpm that is not where the project's packages are.
+     * native addon reads, when that manifest names these bytes. An `import()`
+     * from here would resolve from Lumis's own directory, and under pnpm that
+     * is not where the project's packages are.
      */
     private async readInstalledParser(ref: WasmRef): Promise<Uint8Array | undefined> {
       const manifest = await runtime.resolveInstalledManifest?.(ref.packageName);
       if (!manifest) return undefined;
       try {
+        const installed = await runtime.readResolvedWasmFromDisk(manifest);
+        if (
+          !installed ||
+          parseLanguagePackage(installed, ref.packageName).parser.sha256 !== ref.sha256
+        ) {
+          return undefined;
+        }
         return await runtime.readResolvedWasmFromDisk(new URL(`${ref.name}.wasm`, manifest));
       } catch {
         return undefined;
@@ -1312,13 +1251,7 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       // from wherever that manifest points.
       if (this.resolver === DEFAULT_RESOLVER) {
         const installed = await this.readInstalledParser(ref);
-        if (installed) {
-          try {
-            return await verifyWasm(ref, installed);
-          } catch (error) {
-            if (!this.callerResolved) throw error;
-          }
-        }
+        if (installed) return installed;
       }
 
       const fsCached = await this.readVerifiedCache(ref, key);
@@ -1338,24 +1271,30 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
     // the runtime knows how to reach.
     private async readParserWasm(
       resolved: { wasm: NonNullable<LoadLanguageOptions["wasm"]>; definition: { id: string } },
+      packaged: WasmRef,
       requestedId: string,
-      packageName: string,
-    ): Promise<Uint8Array> {
+    ): Promise<ParserBytes> {
       const { wasm } = resolved;
       if (typeof wasm === "object" && isWasmRef(wasm)) {
-        return this.resolveParserWasm(resolved.definition.id, wasm);
+        const bytes = await this.resolveParserWasm(resolved.definition.id, wasm);
+        return { bytes, digest: wasm.sha256 };
       }
       if (!isRuntimeWasmInput(wasm)) {
         throw new Error(`Unsupported WASM input for language "${requestedId}"`);
       }
 
       const source = await runtime.resolveWasm(wasm);
-      if (source instanceof Uint8Array) return source;
+      if (source instanceof Uint8Array) return handedParser(source);
 
       const disk = await runtime.readResolvedWasmFromDisk(source);
-      if (disk) return disk;
+      if (disk) return handedParser(disk);
 
-      return downloadParserWasm(source, resolved.definition.id, packageName);
+      const downloaded = await downloadParserWasm(
+        source,
+        resolved.definition.id,
+        packaged.packageName,
+      );
+      return { bytes: await verifyWasm(packaged, downloaded), digest: packaged.sha256 };
     }
 
     private async createLoadedLanguage(opts: LoadLanguageOptions): Promise<LoadedLanguage> {
@@ -1377,13 +1316,10 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
         throw new Error(`Language package "${opts.packageName}" has no parser or highlights query`);
       }
 
-      const wasmInput = await this.readParserWasm(resolved, opts.definition.id, opts.packageName);
-      // Always, including when the caller chose where the bytes come from:
-      // `withWasm()` selects a source, it does not waive the package's digest.
-      await verifyWasm(packaged.wasm, wasmInput);
+      const parserWasm = await this.readParserWasm(resolved, packaged.wasm, opts.definition.id);
 
       const { Language, Parser, Query } = await loadTreeSitter();
-      const language = await loadParserLanguage(Language, wasmInput, packaged);
+      const language = await loadParserLanguage(Language, parserWasm, packaged);
       const config = compileHighlightConfig(
         language,
         Query,
@@ -1442,7 +1378,6 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
           name: packageMetadata.parser.name,
           version: packageMetadata.version,
           sha256: packageMetadata.parser.sha256,
-          size: packageMetadata.parser.size,
         },
         grammarName: packageMetadata.parser.grammarName,
         highlights: packaged.highlights,
