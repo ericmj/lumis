@@ -85,6 +85,31 @@ The subject must be `chore(release): <package> <version>` and nothing else, bar 
 Review every file `release-prepare` touches. Crate releases rewrite dependent
 manifests too — see [Crate version requirements](#crate-version-requirements).
 
+### Changelog template
+
+`release-prepare` uses git-cliff 2.14.2 with the shared
+[`release-notes.tera`](https://github.com/leandrocp/github-actions/blob/938d95526b75be259407b02aa1813d455033ffd5/git-cliff/release-notes.tera)
+from `leandrocp/github-actions`. `mise run release-template` downloads that
+revision into `tmp/release-templates/` on first use, then reuses the cached file.
+The same task runs locally and in CI, before any version files change.
+
+New entries prefer PR titles and PR authors, include scopes and breaking-change
+markers, and follow the section order in `cliff.toml`. Entries without a PR title
+use the commit message. Author credits require a PR author or commit-author
+username from GitHub; without either, the entry has no author credit.
+Credits omit `leandrocp`, while retaining PR links and external contributor
+credits. Existing changelog history is preserved. Commit filters, package tag patterns,
+and version-bump rules remain local to Lumis.
+
+To update the template, change `revision` in the `release-template` task to a
+published commit of `github-actions` and update the link above. Preview a package
+before preparing its release:
+
+```sh
+template="$(mise run release-template)"
+mise exec -- git-cliff --config cliff.toml --body-file "$template" --github-repo leandrocp/lumis --tag-pattern 'npm-themes/v[0-9].*' --include-path 'packages/javascript/themes/**/*' --unreleased
+```
+
 ## No pull request for a package?
 
 `mise run release-plan` skipped it because one of:
