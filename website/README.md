@@ -8,6 +8,15 @@ responses for agents. Each HTML entry point has a matching file under `public/`;
 `pnpm run check:markdown` verifies the routes, response headers, alternate links,
 and token estimates before every build.
 
+The build renders the home, comparison, and showcase pages into HTML using
+`src/entry-server.ts` and the same section renderers that `pnpm dev` runs in the
+browser. Headings, links, and examples are readable without JavaScript. Browser
+entry points attach the interactive demos to that markup. The home page starts
+the highlighting worker on load to warm up its first languages; the comparison
+and showcase pages never start it.
+
+`pnpm build` also runs TypeScript checks; use `pnpm types:check` to run them alone.
+
 Agent discovery metadata lives under `public/.well-known/`: an ARD catalog,
 the Lumis Docs MCP Server Card, a digest-pinned Lumis skill index, and an
 [RFC 9727](https://www.rfc-editor.org/rfc/rfc9727) API catalog. The API catalog
