@@ -1,4 +1,3 @@
-; This file is auto-generated. Do not edit.
 ; Upstream captures Elixir definitions as `@local.definition.var`, `.parameter`,
 ; `.function`, `.type` and `.import`, which the highlighter does not read. Their
 ; patterns nest `(_ ...)` twenty levels deep under every `binary_operator` and
