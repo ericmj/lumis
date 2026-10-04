@@ -40,6 +40,7 @@ lumis languages cache    Download and compile parsers so later runs skip both
 lumis themes list        List built-in themes and custom themes in the data dir
 lumis themes show        Print one theme's appearance and colors
 lumis themes generate    Extract a theme JSON file from a Neovim colorscheme repo
+lumis serve              Highlight requests a parent process sends on stdin
 ```
 
 ## Usage
@@ -57,6 +58,12 @@ Parsers download on demand into the data directory (`LUMIS_DATA_DIR`, otherwise
 the platform default) and are verified before use. `lumis languages cache` fetches
 and compiles them ahead of time, and every Lumis runtime reads that same
 directory, so a cache prepared here also starts Elixir and Node warm.
+
+`lumis serve` keeps one process highlighting for a parent, such as an Erlang
+port opened with `{:packet, 4}`. Requests and replies are length-prefixed
+frames, described in `src/serve.rs`. It reads parsers from the data directory
+and never downloads, it exits as soon as stdin closes, and each request can
+carry a CPU time limit the kernel enforces with `RLIMIT_CPU`. Unix only.
 
 ## Documentation
 

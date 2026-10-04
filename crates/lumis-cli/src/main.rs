@@ -2,6 +2,8 @@ mod config;
 mod formatter_options;
 mod gen_theme;
 mod registry;
+#[cfg(unix)]
+mod serve;
 
 use anyhow::Result;
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -91,6 +93,13 @@ enum Commands {
         #[command(subcommand)]
         command: ThemesCommands,
     },
+
+    /// Highlight requests a parent process frames on stdin, as an Erlang port does
+    #[cfg(unix)]
+    #[command(
+        after_help = "Requests and replies are frames with a 4-byte length, as from an Erlang port opened with {:packet, 4}.\nThe process never downloads parsers; cache them first with `lumis languages cache`.\n\nExamples:\n  lumis --data-dir /app/lumis serve\n  lumis --data-dir /app/lumis serve --preload elixir,erlang"
+    )]
+    Serve(serve::ServeArgs),
 }
 
 #[derive(clap::Args)]
@@ -472,14 +481,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_dir = lumis_wasm_runtime::store::resolve_data_dir(cli.data_dir);
     lumis_wasm_runtime::set_compile_cache_dir(data_dir.clone());
-    let config_path = match cli.config {
-        Some(path) => path,
-        None => config::default_path()?,
-    };
     let verbose = cli.verbose;
 
     match cli.command {
         Commands::Highlight(mut args) => {
+            let config_path = match cli.config {
+                Some(path) => path,
+                None => config::default_path()?,
+            };
             let config = config::Config::load(&config_path)?;
             // The config theme is applied after the check, so a config file
             // cannot make `lumis highlight -f html-linked` fail.
@@ -535,6 +544,8 @@ fn main() -> Result<()> {
                 appearance.as_deref(),
             ),
         },
+        #[cfg(unix)]
+        Commands::Serve(args) => serve::run(data_dir, args),
     }
 }
 
