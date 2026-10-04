@@ -6,6 +6,7 @@
 //! depth: guards that list every Unicode range one `or` at a time. Each shape
 //! here renders in milliseconds and took seconds, growing with the square of
 //! the depth, while the locals query held patterns open across every level.
+#![cfg(feature = "lang-elixir")]
 
 use lumis::{languages::Language, HighlightOptions, HtmlLinkedBuilder};
 
