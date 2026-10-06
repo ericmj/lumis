@@ -378,10 +378,12 @@ function parseLanguagePackageValue(value: unknown, expectedPackageName: string):
     return invalidLanguagePackage(expectedPackageName);
   }
 
-  const languages: Record<string, PackagedLanguage> = Object.create(null);
-  for (const id of Object.keys(languagesValue)) {
-    languages[id] = parsePackagedLanguage(property(languagesValue, id), expectedPackageName);
-  }
+  const entries = Object.keys(languagesValue).map((id): [string, PackagedLanguage] => [
+    id,
+    parsePackagedLanguage(property(languagesValue, id), expectedPackageName),
+  ]);
+  const languages: Record<string, PackagedLanguage> = Object.fromEntries(entries);
+  Object.setPrototypeOf(languages, null);
   if (Object.keys(languages).length === 0) return invalidLanguagePackage(expectedPackageName);
 
   return {
@@ -442,6 +444,9 @@ function isSafePackagePathSegment(value: string): boolean {
   const stem = value.split(".", 1)[0]!.replace(/[ .]+$/u, "");
   let hasForbiddenCharacter = false;
   for (let index = 0; index < value.length; index += 1) {
+    // Keep this check over UTF-16 code units; each code unit is checked against
+    // the Windows C0-control range independently.
+    // oxlint-disable-next-line unicorn/prefer-code-point -- Windows path validation checks UTF-16 code units against the C0-control range.
     if (value.charCodeAt(index) <= 0x1f || '<>:"/\\|?*'.includes(value[index]!)) {
       hasForbiddenCharacter = true;
       break;
@@ -507,7 +512,7 @@ function packagedLanguage(
 
 let treeSitterPromise: Promise<typeof import("web-tree-sitter")> | undefined;
 
-async function loadTreeSitter() {
+async function loadTreeSitter(): Promise<typeof import("web-tree-sitter")> {
   treeSitterPromise ??= import("web-tree-sitter");
   return treeSitterPromise;
 }
@@ -964,7 +969,7 @@ export function compileHighlightConfig(
    * result.
    */
   function parseOffsetDeltas(deltas: PredicateStep[]): QueryCaptureOffset | undefined {
-    const values = [0, 0, 0, 0];
+    const values: [number, number, number, number] = [0, 0, 0, 0];
 
     for (const [index, delta] of deltas.slice(0, values.length).entries()) {
       let value: number | undefined;
@@ -979,10 +984,10 @@ export function compileHighlightConfig(
     }
 
     return {
-      startRow: values[0] as number,
-      startColumn: values[1] as number,
-      endRow: values[2] as number,
-      endColumn: values[3] as number,
+      startRow: values[0],
+      startColumn: values[1],
+      endRow: values[2],
+      endColumn: values[3],
     };
   }
 
@@ -1140,8 +1145,9 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       const response = await fetchFromCdns(
         href,
         resolver === DEFAULT_LANGUAGE_PACKAGE_RESOLVER,
-      ).catch((error: Error) => {
-        throw new Error(`could not download language package ${packageName}: ${error.message}`);
+      ).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`could not download language package ${packageName}: ${message}`);
       });
       const packageMetadata = parseLanguagePackage(
         new Uint8Array(await response.arrayBuffer()),
@@ -1237,10 +1243,9 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       }
       const href = typeof url === "string" ? url : url.href;
       const response = await fetchFromCdns(href, this.resolver === DEFAULT_RESOLVER).catch(
-        (error: Error) => {
-          throw new Error(
-            `could not download parser WASM ${ref.name}@${ref.version}: ${error.message}`,
-          );
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`could not download parser WASM ${ref.name}@${ref.version}: ${message}`);
         },
       );
       return new Uint8Array(await response.arrayBuffer());
@@ -1356,6 +1361,7 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       }
 
       const loaded: LoadedLanguage = {
+        kind: "wasm",
         definition: resolved.definition,
         parser,
         language,
@@ -1408,8 +1414,13 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
     async initParser(): Promise<void> {
       this.sharedCache.parserInit ??= Promise.all([
         loadTreeSitter(),
-        runtime.parserInitOptions?.() ?? Promise.resolve(),
-      ]).then(([{ Parser }, initOptions]) => Parser.init(initOptions));
+        runtime.parserInitOptions?.() ?? Promise.resolve(undefined),
+      ]).then(
+        ([treeSitter, initOptions]: [
+          typeof import("web-tree-sitter"),
+          Parameters<typeof import("web-tree-sitter").Parser.init>[0],
+        ]) => treeSitter.Parser.init(initOptions),
+      );
       await this.sharedCache.parserInit;
     }
 
@@ -1472,7 +1483,7 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       const existing = this.loadedLanguages.get(PLAINTEXT_LANG_ID);
       if (existing) return existing;
 
-      const loaded = { definition } as LoadedLanguage;
+      const loaded: LoadedLanguage = { kind: "plaintext", definition };
       this.loadedLanguages.set(PLAINTEXT_LANG_ID, loaded);
       this.registerLanguage(definition);
       return loaded;
@@ -1484,8 +1495,11 @@ export function createLanguagesModule(runtime: RuntimeEnvironment): LanguagesMod
       options: { rainbowBrackets?: boolean; budget?: Budget } = {},
       report?: { budget?: BudgetExhausted },
     ): LumisHighlightEvent[] {
-      if (language.definition.id === PLAINTEXT_LANG_ID) {
+      if (language.kind === "plaintext") {
         return [{ type: "source", start: 0, end: encoder.encode(source).byteLength }];
+      }
+      if (language.kind === "native") {
+        throw new Error("Native languages cannot be highlighted by the WebAssembly runtime");
       }
       if (options.rainbowBrackets && !language.brackets) {
         const compile = this.bracketCompilers.get(language);
