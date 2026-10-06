@@ -407,11 +407,12 @@ fn preload_installed_loads_every_installed_language() {
 #[cfg(target_os = "linux")]
 #[test]
 fn max_data_mb_fails_allocations_past_the_limit() {
-    let mut serve = Serve::start(&["--max-data-mb", "64"]);
-    assert_eq!(serve.highlight("a.ex", ":ok").status, 0);
+    // Room to compile the JSON parser, not to parse this much nesting.
+    let mut serve = Serve::start(&["--max-data-mb", "256"]);
+    assert_eq!(serve.highlight("a.json", "[1]").status, 0);
 
-    serve.send(&Request::document("a.json", &"[".repeat(4_000_000)).encode());
+    serve.send(&Request::document("a.json", &"[".repeat(16_000_000)).encode());
 
-    let status = serve.wait();
-    assert!(!status.success(), "{status:?}");
+    // SIGABRT, from the allocation that failed.
+    assert_eq!(serve.wait().signal(), Some(libc::SIGABRT));
 }
