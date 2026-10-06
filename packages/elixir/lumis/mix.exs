@@ -11,6 +11,8 @@ defmodule Lumis.MixProject do
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       build_embedded: Mix.env() == :prod,
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      make_clean: ["clean"],
       package: package(),
       docs: docs(),
       deps: deps(),
@@ -93,6 +95,7 @@ defmodule Lumis.MixProject do
     [
       {:rustler, "~> 0.29", optional: true},
       {:rustler_precompiled, "~> 0.8"},
+      {:elixir_make, "~> 0.9", runtime: false},
       {:nimble_options, "~> 1.0"},
       {:ex_doc, ">= 0.0.0", only: :docs},
       {:makeup_elixir, ">= 0.0.0", only: :docs},
