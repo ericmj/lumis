@@ -1519,6 +1519,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "etcetera",
+ "libc",
  "lumis-core",
  "lumis-wasm-runtime",
  "predicates",

@@ -68,6 +68,13 @@ the platform default) and are verified before use. `lumis languages download` fe
 and compiles them ahead of time, and every Lumis runtime reads that same
 directory, so a cache prepared here also starts Elixir and Node warm.
 
+`lumis serve` keeps one process highlighting for a parent, such as an Erlang
+port opened with `{:packet, 4}`. Requests and replies are length-prefixed
+frames, described in `src/serve.rs`. It reads parsers only from the
+`--parser-dir` directories and never downloads, it exits as soon as stdin
+closes, and each request can carry a CPU time limit the kernel enforces with
+`RLIMIT_CPU`. Unix only.
+
 ## Documentation
 
 - [CLI commands](https://docs.lumis.sh/cli/commands) — every command, flag and default

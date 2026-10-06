@@ -2,6 +2,8 @@ mod config;
 mod formatter_options;
 mod gen_theme;
 mod registry;
+#[cfg(unix)]
+mod serve;
 
 use anyhow::Result;
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -95,6 +97,10 @@ enum Commands {
         #[command(subcommand)]
         command: ThemesCommands,
     },
+
+    /// Highlight requests from a parent process, framed on stdin and stdout
+    #[cfg(unix)]
+    Serve(serve::ServeArgs),
 }
 
 #[derive(clap::Args)]
@@ -642,14 +648,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_dir = lumis_wasm_runtime::store::resolve_data_dir(cli.data_dir);
     lumis_wasm_runtime::set_compile_cache_dir(data_dir.clone());
-    let config_path = match cli.config {
-        Some(path) => path,
-        None => config::default_path()?,
-    };
     let verbose = cli.verbose;
 
     match cli.command {
         Commands::Highlight(mut args) => {
+            let config_path = match cli.config {
+                Some(path) => path,
+                None => config::default_path()?,
+            };
             let config = config::Config::load(&config_path)?;
             // The config theme is applied after the check, so a config file
             // cannot make `lumis highlight -f html-linked` fail.
@@ -695,6 +701,8 @@ fn main() -> Result<()> {
                 appearance.as_deref(),
             ),
         },
+        #[cfg(unix)]
+        Commands::Serve(args) => serve::run(data_dir, args),
     }
 }
 
