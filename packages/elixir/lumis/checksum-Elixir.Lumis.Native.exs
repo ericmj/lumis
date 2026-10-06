@@ -1,0 +1,17 @@
+%{
+  "liblumis_nif-v0.10.2-nif-2.15-aarch64-apple-darwin.so.tar.gz" => "sha256:1f5ffbe0230a0be80ddae49416ac39f3f9f21849f4846fb4fae0a9f9fd7820a3",
+  "liblumis_nif-v0.10.2-nif-2.15-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:5b5c1ef8c090d9e10655fef9985f16e6158287e64e91c1ac84b11bc67b16b066",
+  "liblumis_nif-v0.10.2-nif-2.15-aarch64-unknown-linux-musl.so.tar.gz" => "sha256:01eea167d69a984cfd8a8fdc48096f092a14a6217601f424c6f8ffb262335601",
+  "liblumis_nif-v0.10.2-nif-2.15-arm-unknown-linux-gnueabihf.so.tar.gz" => "sha256:602424b690752550639a8108d1de0cfce97874335b120aa985198b61a26d7fb8",
+  "liblumis_nif-v0.10.2-nif-2.15-riscv64gc-unknown-linux-gnu.so.tar.gz" => "sha256:d5f8e6e38992e485fda30ef151619faf7b8596a3d6c2f0674075a7b568f8a3fc",
+  "liblumis_nif-v0.10.2-nif-2.15-x86_64-apple-darwin.so.tar.gz" => "sha256:8d47cf9e5f169aa30eb8de3a4b270668d89fc9e12ad9fb6fc137cd84c9030a03",
+  "liblumis_nif-v0.10.2-nif-2.15-x86_64-unknown-freebsd--legacy_cpu.so.tar.gz" => "sha256:d2fd7799ec77d496fd6db1c17e7b72f19be5956438c8fedfdbc0d0b1d55781b2",
+  "liblumis_nif-v0.10.2-nif-2.15-x86_64-unknown-freebsd.so.tar.gz" => "sha256:13978bc6c3fb31ff7cf0d8f6953bb8bcd2f55c01ab544b62d1a534fd4f041454",
+  "liblumis_nif-v0.10.2-nif-2.15-x86_64-unknown-linux-gnu--legacy_cpu.so.tar.gz" => "sha256:e39b06bed4f22ce78d646dca6cb7d59fbeab35265e47685d6ed3659d060eaab7",
+  "liblumis_nif-v0.10.2-nif-2.15-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:9e12c13ce695280392987c4ee39b6049f7a4dbb72c9c7bf00af3320da1828ab2",
+  "liblumis_nif-v0.10.2-nif-2.15-x86_64-unknown-linux-musl.so.tar.gz" => "sha256:24d9f5c1610c3fb137bdd105998efcd2c3a35c7872a04f331663377bf0ecef4f",
+  "lumis_nif-v0.10.2-nif-2.15-x86_64-pc-windows-gnu--legacy_cpu.dll.tar.gz" => "sha256:1db8cf80560f5c6ef9506de0fcd4969fe955ef436999cd3ac6d9735c00061942",
+  "lumis_nif-v0.10.2-nif-2.15-x86_64-pc-windows-gnu.dll.tar.gz" => "sha256:dd559f7d4d99cce44fbf3e83ce5fca7a370bca0798bcacbc2bb5ac0078ff0a68",
+  "lumis_nif-v0.10.2-nif-2.15-x86_64-pc-windows-msvc--legacy_cpu.dll.tar.gz" => "sha256:9f7062d555e16cbe184f5671fdb0949935a41bb6030d200e80bf000e272fa86e",
+  "lumis_nif-v0.10.2-nif-2.15-x86_64-pc-windows-msvc.dll.tar.gz" => "sha256:9a3ade45e12a84f1176b8407e6a4060ad4c1f0029cb282c8a3c2a5e2fb1f032e",
+}
